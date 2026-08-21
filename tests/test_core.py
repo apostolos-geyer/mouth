@@ -2,12 +2,14 @@
 
 import inspect
 import json
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from localtranscription import config as cfgfile
 from localtranscription.backends import Backend, Transcription, Word
 from localtranscription.formats import words_to_srt, write_outputs
 from localtranscription.recorder import SessionRecorder, load_manifest
@@ -889,7 +891,11 @@ def _dictate(tmp_path, spec, *args):
         sys.argv = ["lt", "dictate", "--wav", {str(wav)!r}, *{list(args)!r}]
         m.main()
     """))
-    return subprocess.run([sys.executable, str(child)], capture_output=True, timeout=180)
+    # XDG_CONFIG_HOME at a scratch dir: the child would otherwise read the developer's
+    # own config.toml, whose whole purpose is to change what `lt dictate` does.
+    env = {**os.environ, "XDG_CONFIG_HOME": str(tmp_path / "config")}
+    return subprocess.run([sys.executable, str(child)], capture_output=True, timeout=180,
+                          env=env)
 
 
 def test_dictate_puts_only_the_text_on_stdout(tmp_path):
@@ -964,3 +970,113 @@ def test_dictate_hold_keeps_going_through_pauses(tmp_path):
     )
     assert finals(stops) == 1
     assert finals(holds) == 2
+
+
+# ------------------------------------------------------------------ config file
+
+
+def _cli_params():
+    """The real CLI's option table, so these tests can't drift from the real flags."""
+    import typer.main
+
+    from localtranscription.app import _params, app
+
+    return _params(typer.main.get_command(app))
+
+
+def _map(text):
+    import tomllib
+
+    return cfgfile.default_map(tomllib.loads(text), _cli_params())
+
+
+def test_bare_keys_reach_every_command_that_listens():
+    m = _map('backend = "mlx"\nlanguage = "Greek"\n')
+    assert set(m) == {"tui", "cli", "dictate"}
+    assert all(v == {"backend": "mlx", "language": "Greek"} for v in m.values())
+
+
+def test_a_table_overrides_the_bare_key():
+    m = _map("record = true\n\n[dictate]\nrecord = false\n")
+    assert m["tui"]["record"] is True
+    assert m["dictate"]["record"] is False
+
+
+def test_a_bare_key_never_reaches_diarize():
+    """The reason bare keys are scoped at all.
+
+    --threshold is an RMS gate to a session and a cosine distance to `diarize`. One
+    number cannot be both, and a config that quietly sent 0.02 to the clusterer would
+    collapse every speaker into one.
+    """
+    assert "diarize" not in _map("threshold = 0.02\n")
+    assert _map("[diarize]\nthreshold = 0.7\n") == {"diarize": {"threshold": 0.7}}
+
+
+def test_an_option_belonging_elsewhere_says_where_it_goes():
+    with pytest.raises(cfgfile.ConfigError, match=r"\[quantize\]"):
+        _map("bits = 4\n")
+
+
+def test_a_typo_is_an_error_with_a_suggestion():
+    """Silence is the wrong answer here: a dead key is a setting you believe is on."""
+    with pytest.raises(cfgfile.ConfigError, match="--backend"):
+        _map('bakend = "mlx"\n')
+    with pytest.raises(cfgfile.ConfigError, match="--hold"):
+        _map("[dictate]\nholdd = true\n")
+    with pytest.raises(cfgfile.ConfigError, match="dictate"):
+        _map("[dictat]\nhold = true\n")
+
+
+def test_either_spelling_of_a_flag_resolves():
+    """--max-gap is what --help prints; max_gap is what the parameter is called."""
+    assert _map("max-gap = 5.0\n")["tui"] == _map("max_gap = 5.0\n")["tui"]
+    # And where the two differ -- `lt models --dir` sets model_dir -- both still land.
+    assert _map('[models]\ndir = "/ckpts"\n') == {"models": {"model_dir": "/ckpts"}}
+
+
+def test_home_relative_paths_expand():
+    """Click casts strings to Paths for us, but it does not expand `~`, and a config
+    file is exactly where someone writes one."""
+    out = _map('out = "~/notes"\n')["cli"]["out"]
+    assert out == str(Path.home() / "notes")
+
+
+def test_a_missing_file_is_not_a_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(cfgfile.paths, "config_file", lambda: tmp_path / "nope.toml")
+    assert cfgfile.locate() is None
+    # But one named by hand was named for a reason.
+    with pytest.raises(cfgfile.ConfigError):
+        cfgfile.locate(tmp_path / "nope.toml")
+
+
+def _invoke(tmp_path, text, *args):
+    from typer.testing import CliRunner
+
+    from localtranscription.app import app
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(text)
+    return CliRunner().invoke(app, ["--config", str(cfg), *args])
+
+
+def test_a_flag_still_beats_the_file(tmp_path):
+    """The whole claim of the feature: the file moves defaults, it doesn't pin values."""
+    from_file = _invoke(tmp_path, "[cadence]\ninterim = 2.0\n", "cadence", "10")
+    assert from_file.exit_code == 0
+    assert "first text after 2s" in from_file.stdout
+
+    typed = _invoke(tmp_path, "[cadence]\ninterim = 2.0\n", "cadence", "10",
+                    "--interim", "0.5")
+    assert typed.exit_code == 0
+    assert "first text after 0.5s" in typed.stdout
+
+
+def test_a_broken_config_stops_every_command_but_reports_itself(tmp_path):
+    """`lt config` is how you find out what's wrong with the file, so it survives one."""
+    broken = 'backend = "mlx"\nlanguage =\n'
+    assert _invoke(tmp_path, broken, "cadence", "10").exit_code == 2
+
+    shown = _invoke(tmp_path, broken, "config")
+    assert shown.exit_code == 1
+    assert "line 2" in shown.stdout

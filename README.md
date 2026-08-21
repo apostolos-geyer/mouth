@@ -5,6 +5,23 @@ Live local transcription with Qwen3-ASR + Qwen3-ForcedAligner, running on MPS.
 Adapted from the offline pipeline at `~/Desktop/school/spring-2026/tools/qwen-transcriber/`
 (built for the entrepreneur interview) to run against the microphone in real time.
 
+## Install
+
+```sh
+uv tool install ".[mlx,diarize]"    # a system-wide `lt`, from a clone
+uv tool update-shell                # once, if uv's bin dir isn't on your PATH yet
+```
+
+That's a snapshot of the code, not a link to it: rerun with `--force` after changing
+anything, or install `-e` instead and edits go live.
+
+The extras are the two heavy optional paths — `mlx` is the MLX backend (`--backend mlx`,
+and what `lt quantize` needs), `diarize` is `lt diarize`. Neither is a default dependency,
+because the first pulls the whole mlx stack and the second coremltools. `uv tool install .`
+gets the torch path alone.
+
+Or run it out of the repo without installing anything:
+
 ```sh
 uv sync
 uv run lt tui          # or: uv run localtranscription tui
@@ -22,7 +39,8 @@ lt backends               # which inference backends are installed
 lt models                 # local checkpoints available to --model
 lt quantize               # build a quantised checkpoint (the big perf win)
 lt diarize FILE           # who spoke when, offline
-lt paths                  # where transcripts, recordings and checkpoints live
+lt paths                  # where config, transcripts and checkpoints live
+lt config                 # defaults for the flags you always pass
 lt cadence 10             # what the partial schedule costs on a 10s utterance
 
 lt tui -l Greek -m 2      # language + mic index
@@ -38,11 +56,68 @@ First run downloads ~5GB of weights. After that the model loads in about 5s.
 still produces Greek, but inconsistently, romanizing the same phrase on one pass and not
 the next. Setting it properly is worth it.
 
+## Config
+
+The flags you'd otherwise type every time, in a file:
+
+```sh
+lt config --init          # write a commented starter
+lt config                 # show what it sets, per command
+lt config --edit          # open it in $EDITOR
+```
+
+```toml
+# ~/.config/localtranscription/config.toml
+
+backend = "mlx"
+model = "qwen3-asr-1.7b-q8g64"
+language = "Greek"
+
+[dictate]
+hold = true
+record = false
+
+[diarize]
+threshold = 0.7
+```
+
+Nothing in it is a new setting: every key is an existing flag, and the file only changes
+what that flag **defaults** to. A flag you type still wins — not by convention but by
+construction, because this feeds Click's `default_map` and the layering happens inside the
+parser. There's no per-flag plumbing to forget and no "was this passed?" sentinel to get
+wrong, which is where hand-rolled versions of this leak.
+
+Bare keys apply to the commands that listen — `tui`, `cli`, `dictate`. Everything else
+takes a table named after the command, because the same flag name doesn't mean the same
+thing everywhere: `--threshold` is an RMS gate to a session and a cosine distance to
+`diarize`, and a bare key that reached both would collapse every speaker into one.
+
+Keys are checked against the real CLI, not a list kept in parallel with it. So either
+spelling resolves — `max-gap` as `--help` prints it, `max_gap` as the parameter is named,
+and `--dir` or `model_dir` for the one place they differ — and an unknown key is an error
+with a suggestion rather than a shrug:
+
+```
+$ lt config
+[dictate] has no --holdd. Did you mean --hold?
+```
+
+That's the point of validating at all. A config file is written once and read never; a
+typo that silently does nothing is a setting you believe is on for months.
+
+`--config PATH` or `LT_CONFIG` point somewhere else, and a file named by hand must exist —
+a typo'd path shouldn't silently fall back to your defaults. `lt config` does its own
+loading, so it still reports on a file too broken for any other command to run.
+
+One TOML rule worth knowing, since it bites here: bare keys must come **before** the first
+`[table]`, or they land inside it.
+
 ## Layout
 
 ```
 src/localtranscription/
-  paths.py       XDG data/cache locations
+  paths.py       XDG config/data/cache locations
+  config.py      the config file, layered under the flags
   vad.py         VAD + Cadence (when partials fire)
   engine.py      model loading, inference worker, session driver
   backends.py    torch / mlx behind one transcribe() method
@@ -296,11 +371,12 @@ lt paths                  # show them, and which flag overrides each
 
 | | default | override |
 |---|---|---|
+| config | `$XDG_CONFIG_HOME/localtranscription/config.toml` | `--config` |
 | transcripts | `$XDG_DATA_HOME/localtranscription/out` | `--out` |
 | recordings | `$XDG_DATA_HOME/localtranscription/recordings` | `--record-dir` |
 | checkpoints | `$XDG_CACHE_HOME/localtranscription/models` | `--model` |
 
-Falling back to `~/.local/share` and `~/.cache`. Checkpoints live under the **cache**
+Falling back to `~/.config`, `~/.local/share` and `~/.cache`. Checkpoints live under the **cache**
 because `lt quantize` rebuilds any of them from upstream weights — losing that directory
 costs time, not work. Transcripts and recordings are data and don't.
 
@@ -567,7 +643,7 @@ i.e. losing transcript. Depth is surfaced as `queue N` in the HUD instead.
 ## Tests
 
 ```sh
-uv run pytest tests/ -q      # ~7s, offline
+uv run pytest tests/ -q      # ~25s, offline
 ```
 
 CPU-only for VAD, cadence, recorder, formats and the diarization logic. The end-to-end

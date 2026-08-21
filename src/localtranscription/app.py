@@ -10,10 +10,11 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from .backends import (
     BACKENDS,
@@ -26,6 +27,7 @@ from .backends import (
     load_backend,
     local_checkpoints,
 )
+from . import config as cfgfile
 from . import paths
 from . import quantize as qz
 from .sources import cached_threshold, remember_threshold
@@ -47,6 +49,62 @@ app = typer.Typer(
     rich_markup_mode="rich",
     help="Live local transcription with [b]Qwen3-ASR[/b] + forced alignment.",
 )
+
+CONFIG = typer.Option(None, "--config", envvar="LT_CONFIG", metavar="PATH",
+                      help="Config file to read "
+                           "[dim](default ~/.config/localtranscription/config.toml)[/].")
+
+
+class _Root(NamedTuple):
+    """What the root callback resolved, for `lt config` to report."""
+    explicit: Optional[Path]
+    path: Optional[Path]
+    defaults: dict
+
+
+def _params(group) -> dict[str, dict[str, str]]:
+    """Every command's options, as {written form: parameter name}.
+
+    Read off the built CLI rather than listed here, so the config file is validated
+    against the real options and can't drift away from them. Both spellings resolve,
+    because both are things a person sees: `--record-dir` is what --help prints,
+    `record_dir` is what it's called underneath, and for `lt models` the two differ
+    (`--dir` sets `model_dir`). Long options only -- `--no-record` as a key would read
+    as "no_record = true means record", which is backwards.
+    """
+    out: dict[str, dict[str, str]] = {}
+    for name, cmd in group.commands.items():
+        alias = {}
+        for prm in cmd.params:
+            if not prm.name:
+                continue
+            alias[prm.name] = prm.name
+            for opt in prm.opts:
+                if opt.startswith("--"):
+                    alias[opt[2:].replace("-", "_")] = prm.name
+        out[name] = alias
+    return out
+
+
+@app.callback()
+def _root(ctx: typer.Context, config: Optional[Path] = CONFIG):
+    """Live local transcription with [b]Qwen3-ASR[/b] + forced alignment."""
+    ctx.obj = _Root(explicit=config, path=None, defaults={})
+    # `lt config` is how you inspect a file that may not parse, so it does its own
+    # loading and reports the failure instead of being taken down by it.
+    if ctx.invoked_subcommand == "config":
+        return
+    try:
+        path = cfgfile.locate(config)
+        defaults = cfgfile.default_map(cfgfile.read(path), _params(ctx.command)) \
+            if path else {}
+    except cfgfile.ConfigError as e:
+        raise typer.BadParameter(str(e), param_hint="--config") from e
+    # This is the whole mechanism: click consults default_map per parameter during
+    # parsing, so a flag that was actually typed still wins, with no plumbing per flag.
+    ctx.default_map = defaults
+    ctx.obj = _Root(explicit=config, path=path, defaults=defaults)
+
 
 # Shared across the run commands; typer accepts the same OptionInfo in several signatures.
 OUT = typer.Option(paths.out_dir(), "--out", "-o", help="Where transcripts go.")
@@ -308,8 +366,9 @@ def diarize(
 
 @app.command("paths")
 def paths_():
-    """Show where transcripts, recordings and checkpoints are kept."""
+    """Show where config, transcripts, recordings and checkpoints are kept."""
     rows = [
+        ("config", paths.config_file(), "--config"),
         ("transcripts", paths.out_dir(), "--out"),
         ("recordings", paths.record_dir(), "--record-dir"),
         ("checkpoints", paths.models_dir(), "--model"),
@@ -319,9 +378,82 @@ def paths_():
         console.print(f"  [cyan]{label}[/] [dim]({flag})[/]  {mark}")
         console.print(f"    {path}", highlight=False)
     console.print(
-        "\n[dim]XDG_DATA_HOME / XDG_CACHE_HOME move these. Checkpoints live under the\n"
-        "cache because `lt quantize` rebuilds them; transcripts and recordings do not.[/]"
+        "\n[dim]XDG_CONFIG_HOME / XDG_DATA_HOME / XDG_CACHE_HOME move these. Checkpoints\n"
+        "live under the cache because `lt quantize` rebuilds them; transcripts and\n"
+        "recordings do not.[/]"
     )
+
+
+@app.command("config")
+def config_(
+    ctx: typer.Context,
+    init: bool = typer.Option(False, "--init", help="Write a starter config file."),
+    edit: bool = typer.Option(False, "--edit",
+                              help="Open it in [b]$EDITOR[/b], creating it if needed."),
+):
+    """Show the config file and what it sets [dim](--init to start one)[/].
+
+    The file only changes what a flag [b]defaults[/b] to; a flag you type still wins.
+    Bare keys are for `tui`, `cli` and `dictate`; other commands take a table:
+
+        backend = "mlx"
+        language = "Greek"
+
+        [dictate]
+        hold = true
+    """
+    root: _Root = ctx.obj
+    path = root.explicit.expanduser() if root.explicit else paths.config_file()
+
+    if init or (edit and not path.exists()):
+        try:
+            cfgfile.write_template(path)
+        except cfgfile.ConfigError as e:
+            raise typer.BadParameter(str(e)) from e
+        console.print(f"[green]wrote[/] {path}")
+    if edit:
+        import click
+
+        click.edit(filename=str(path))
+
+    if not path.is_file():
+        console.print(f"[dim]{path}[/]\n[yellow]no config file[/] "
+                      f"[dim]— `lt config --init` starts one[/]")
+        raise typer.Exit(0 if init else 1)
+
+    console.print(f"[green]✓[/] {path}", highlight=False)
+    try:
+        defaults = cfgfile.default_map(cfgfile.read(path), _params(ctx.parent.command))
+    except cfgfile.ConfigError as e:
+        # Not BadParameter: `lt config` on a broken file should read as a report about
+        # that file, not as a misuse of `lt config`. escape() because these messages
+        # quote section names, and [dictate] is also rich markup.
+        console.print(f"\n[red]{escape(str(e))}[/]")
+        raise typer.Exit(1) from e
+    if not defaults:
+        console.print("[dim]sets nothing — every line is commented out.[/]")
+        return
+    group = ctx.parent.command
+    for cmd, values in sorted(defaults.items()):
+        console.print(f"\n[b]lt {cmd}[/]")
+        by_name = {prm.name: prm for prm in group.commands[cmd].params}
+        for name, value in sorted(values.items()):
+            console.print(f"  [cyan]{_shown(by_name[name], value)}[/]", highlight=False)
+
+
+def _shown(prm, value) -> str:
+    """A config entry as the command line it stands in for.
+
+    Worth the few lines: `--hold True` is not a thing you could type, and the whole
+    claim this file makes is that it does what typing the flag would.
+    """
+    opt = max((o for o in prm.opts if o.startswith("--")), key=len, default=prm.name)
+    if not isinstance(value, bool):
+        return f"{opt} {value}"
+    if value:
+        return opt
+    # An on/off pair has a real name for off; a lone flag can only be described.
+    return next((o for o in prm.secondary_opts if o.startswith("--")), f"{opt} off")
 
 
 @app.command()

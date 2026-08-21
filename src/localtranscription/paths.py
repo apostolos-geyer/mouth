@@ -8,6 +8,7 @@ macOS's own convention is `~/Library/Application Support`, but XDG is what's ask
 here and the env vars are honoured either way, so `XDG_DATA_HOME=~/Library/...` gets that
 behaviour without a code change.
 
+    config       $XDG_CONFIG_HOME/localtranscription/config.toml  (~/.config/...)
     transcripts  $XDG_DATA_HOME/localtranscription/out          (~/.local/share/...)
     recordings   $XDG_DATA_HOME/localtranscription/recordings
     checkpoints  $XDG_CACHE_HOME/localtranscription/models      (~/.cache/...)
@@ -37,6 +38,19 @@ def data_dir() -> Path:
 
 def cache_dir() -> Path:
     return _base("XDG_CACHE_HOME", ".cache")
+
+
+def config_dir() -> Path:
+    return _base("XDG_CONFIG_HOME", ".config")
+
+
+def config_file() -> Path:
+    """Defaults for the flags, written by hand. See config.py.
+
+    Config, not data: it is the only file here a user edits, and the only one whose loss
+    changes what a command *does* rather than what it has produced.
+    """
+    return config_dir() / "config.toml"
 
 
 def out_dir() -> Path:
