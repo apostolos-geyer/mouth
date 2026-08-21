@@ -78,12 +78,17 @@ _TEMPLATE = """\
 
 # [tui]
 # partials = "stream"               # needs backend = "mlx"
-# x-partial-draft = true            # experimental: ~1.6x cheaper reencode partials
 
 # [diarize]
 # threshold = 0.65                  # cosine distance -- NOT the VAD threshold above
 # max_speakers = 8
 """
+
+
+#: Keys that used to exist, and what replaced them. A config file is written once and
+#: read never, so "unknown option --x-partial-draft" would be a true statement that
+#: teaches nothing -- the option did exist, and the setting still does.
+RENAMED = {"x_partial_draft": 'partials = "x-draft"'}
 
 
 class ConfigError(Exception):
@@ -169,6 +174,11 @@ def default_map(
                 raise ConfigError(
                     f"{_flag(name)} belongs to `lt {elsewhere[0]}`, which needs its own "
                     f"table: put it under [{elsewhere[0]}]."
+                )
+            if name in RENAMED:
+                raise ConfigError(
+                    f"{_flag(name)} is now {RENAMED[name]}. It is a value of --partials, "
+                    f"not a flag beside it."
                 )
             raise ConfigError(f"unknown option {_flag(name)}.{_suggest(key, shared)}")
         for cmd in SESSION:

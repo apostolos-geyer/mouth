@@ -8,7 +8,8 @@ three of them are the difference between "near realtime" and "why is it dropping
                    no margin. Set from *your* shortest word, it doesn't.
     the cadence    when partials fire. Tighter means the text on screen is fresher, and
                    costs compute this machine may or may not have.
-    --x-partial-draft   whether a tighter cadence is affordable at all.
+    --partials     whether a tighter cadence is affordable at all: "x-draft" decodes
+                   each partial against the previous one and costs far less.
 
 None of that is guessable from the hardware alone: it depends on the checkpoint, the
 room, how fast you talk, and how stable the audio is. So measure it. This module does the
@@ -311,8 +312,9 @@ def render(
     if drafting:
         lines += [
             "",
-            "# Experimental: decode each partial against the previous one as a draft.",
-            "x-partial-draft = true",
+            "# Experimental: re-encoded partials, decoded against the previous pass as a",
+            "# draft. Same text, far fewer forward passes.",
+            'partials = "x-draft"',
         ]
     c = profile.cadence
     lines += [
@@ -391,7 +393,7 @@ def measure(
         full_pts.append((at, time.monotonic() - t))
         if drafter is not None:
             t = time.monotonic()
-            drafter.transcribe(pcm, utterance=0.0)
+            drafter.text(pcm)
             draft_pts.append((at, time.monotonic() - t))
         if on_step is not None:
             on_step()

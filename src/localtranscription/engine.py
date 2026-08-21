@@ -14,8 +14,7 @@ from .backends import (
     DEFAULT_ASR,
     Backend,
     load_backend,
-    open_partial_draft,
-    open_partial_stream,
+    open_partials,
 )
 from .recorder import SessionRecorder
 from .sources import make_source
@@ -95,16 +94,15 @@ class Config:
     cadence: Cadence | None = field(default_factory=Cadence)
     # Voiced audio an utterance needs before it is one. See vad.MIN_SPEECH_SEC.
     min_speech: float = MIN_SPEECH_SEC
-    # Experimental: decode partials against the previous partial as a speculative draft.
-    # Lossless -- see _MlxDraftDecoder -- but it drives the model below transcribe(),
-    # so it is off until it has more mileage. mlx only.
-    x_partial_draft: bool = False
     record: bool = True
     record_dir: Path = field(default_factory=paths.record_dir)
     # How provisional passes are computed.
     #   "reencode" -- re-transcribe the whole prefix each time. Best text, and it heals:
     #                 a word already on screen can be revised. Cost is quadratic in
     #                 utterance length, which the geometric cadence exists to contain.
+    #   "x-draft"  -- re-transcribe the prefix, but decode it against the previous pass
+    #                 as a speculative draft: same text, far fewer forward passes.
+    #                 Experimental, and mlx only. See backends._MlxDraftDecoder.
     #   "stream"   -- feed only new audio to a decoder that keeps its KV cache. Linear
     #                 cost (measured 3.4x -> 1.2x one full pass on a 20s utterance), but
     #                 text appends rather than healing and first text waits for
@@ -141,19 +139,18 @@ class Transcriber:
         on_error=None,
         on_interim=None,
         recorder: SessionRecorder | None = None,
-        stream=None,
+        partials=None,
         timestamps: bool = True,
-        draft=None,
     ):
         self.timestamps = timestamps
-        # Drafted partial decoder, or None. Finals never use it: they run the aligner and
-        # are the artifact that gets saved, so they stay on the library's own path.
-        self.draft = draft
+        # How provisional text gets made. Never None: "no special decoder" is
+        # _ReencodePartials, so this is one object rather than two optional ones and a
+        # branch. Finals never touch it -- they run the aligner and are what gets saved.
+        self.partials = partials or open_partials(
+            backend, mode="reencode", language=language
+        )
+        self._partial_at: float | None = None
         self.backend = backend
-        # An open PartialStream, or None to re-transcribe each prefix. Owned here because
-        # it holds per-utterance decoder state that has to be dropped between utterances.
-        self.stream = stream
-        self._stream_at = None  # start time of the utterance the stream is following
         self.language = language
         self.on_segment = on_segment
         self.on_error = on_error
@@ -226,23 +223,34 @@ class Transcriber:
                 if self.on_error:
                     self.on_error(item.start, str(e))
 
-    def _reset_stream(self, at: float | None):
-        """Point the stream at a new utterance, dropping the previous one's KV cache.
+    def _emit_interim(self, seg: Segment) -> None:
+        """Publish one provisional segment.
 
-        Only closes if it was actually following one: the first chunk of a session has no
-        previous utterance, and closing a stream that was never opened is a no-op worth
-        not performing.
+        However it was produced -- streamed, drafted, re-encoded -- a partial ends here.
+        These four lines used to be written out once per production path, and the copies
+        had already started to differ: only the streamed one set `stable`.
         """
-        if self.stream is not None and self._stream_at is not None:
-            self.stream.close()
-        self._stream_at = at
+        if self.recorder:
+            self.recorder.note_interim(seg.start, seg.audio_sec, seg.text, seg.took)
+        if self.on_interim:
+            self.on_interim(seg)
 
-    def _feed_stream(self, chunk: Chunk) -> Segment | None:
-        assert self.stream is not None  # only reached for incremental chunks, which
-        t0 = time.monotonic()  # only exist when a stream was opened
-        if self._stream_at != chunk.start:
-            self._reset_stream(chunk.start)
-        text = self.stream.feed(chunk.audio).strip()
+    def _partial(self, chunk: Chunk) -> Segment | None:
+        """Provisional text for an utterance still in progress.
+
+        The decoder owns *how*; this owns when its state is stale. Utterance boundaries
+        were tracked in two places before -- here for the stream, inside the decoder for
+        the draft -- which is two answers to one question.
+        """
+        if self._partial_at != chunk.start:
+            # Only if it was actually following one: the first utterance of a session has
+            # no previous state, and resetting a decoder that never ran is a no-op worth
+            # not performing.
+            if self._partial_at is not None:
+                self.partials.reset()
+            self._partial_at = chunk.start
+        t0 = time.monotonic()
+        text = self.partials.text(chunk.audio).strip()
         if not text:
             return None
         return Segment(
@@ -250,70 +258,37 @@ class Transcriber:
             text,
             len(chunk.audio) / SAMPLE_RATE,
             time.monotonic() - t0,
-            stable=self.stream.stable,
-        )
-
-    def _emit_interim(self, seg: Segment) -> None:
-        """Publish one provisional segment.
-
-        The three ways a partial can be produced -- streamed, drafted, re-encoded -- all
-        end here. They used to end in three copies of these four lines, and the copies had
-        already started to differ: only the streamed one set `stable`.
-        """
-        if self.recorder:
-            self.recorder.note_interim(seg.start, seg.audio_sec, seg.text, seg.took)
-        if self.on_interim:
-            self.on_interim(seg)
-
-    def _draft_partial(self, chunk: Chunk) -> Segment | None:
-        assert self.draft is not None  # only called when one was opened
-        t0 = time.monotonic()
-        text = self.draft.transcribe(chunk.audio, utterance=chunk.start).strip()
-        if not text:
-            return None
-        return Segment(
-            chunk.start, text, len(chunk.audio) / SAMPLE_RATE, time.monotonic() - t0
+            stable=self.partials.stable,
         )
 
     def _transcribe_one(self, chunk: Chunk):
-        if chunk.incremental and self.stream is not None:
-            seg = self._feed_stream(chunk)
+        if not chunk.final:
+            seg = self._partial(chunk)
             if seg is not None:
                 self._emit_interim(seg)
             return
 
-        if chunk.final:
-            # Whatever happens below -- empty text, an exception -- this utterance is over,
-            # and the next one must not inherit its decoder state.
-            self._reset_stream(None)
-            if self.draft is not None:
-                self.draft.reset()
-
-        if not chunk.final and self.draft is not None:
-            seg = self._draft_partial(chunk)
-            if seg is not None:
-                self._emit_interim(seg)
-            return
+        # Whatever happens below -- empty text, an exception -- this utterance is over,
+        # and the next one must not inherit its decoder state.
+        if self._partial_at is not None:
+            self.partials.reset()
+            self._partial_at = None
 
         t0 = time.monotonic()
         out = self.backend.transcribe(
             chunk.audio,
             SAMPLE_RATE,
             language=self.language,
-            # Interim timestamps get discarded when the final lands, so skip the aligner.
-            timestamps=chunk.final and self.timestamps,
+            # Only finals reach here now; partials never run the aligner.
+            timestamps=self.timestamps,
         )
         text = out.text.strip()
         if not text:
-            if chunk.final and self.recorder:
+            if self.recorder:
                 self.recorder.discard(chunk.start)
             return
         took = time.monotonic() - t0
         audio_sec = len(chunk.audio) / SAMPLE_RATE
-
-        if not chunk.final:
-            self._emit_interim(Segment(chunk.start, text, audio_sec, took))
-            return
 
         words = [
             {"text": w.text, "start": chunk.start + w.start, "end": chunk.start + w.end}
@@ -355,23 +330,14 @@ def run_session(cfg: Config, hooks, backend=None, stop: threading.Event | None =
     session_id = cfg.stamped()
     recorder = SessionRecorder(cfg.record_dir, session_id) if cfg.record else None
 
-    # Streaming partials need a backend that keeps decoder state; ask for one only if the
-    # caller opted in, and fall back quietly rather than failing a session over a partial.
-    stream = None
-    if cfg.partials == "stream":
-        stream = open_partial_stream(
-            backend, language=cfg.language, chunk_sec=cfg.stream_chunk_sec
-        )
-        if stream is None:
-            hooks.status(f"{backend.name} has no streaming decoder; partials re-encode")
-
-    # Drafted partials are a reencode optimisation, so they are mutually exclusive with
-    # streaming ones -- the stream owns its own decoder state and never re-decodes.
-    draft = None
-    if cfg.x_partial_draft and stream is None:
-        draft = open_partial_draft(backend, language=cfg.language)
-        if draft is None:
-            hooks.status(f"{backend.name} cannot draft partials; decoding them in full")
+    # Falling back is a cost, not a failure: a backend that cannot do the asked-for mode
+    # still transcribes, just more expensively, so say so rather than end the session over
+    # a provisional pass.
+    partials = open_partials(
+        backend, mode=cfg.partials, language=cfg.language, chunk_sec=cfg.stream_chunk_sec
+    )
+    if partials.mode != cfg.partials:
+        hooks.status(f"{backend.name} cannot do {cfg.partials} partials; re-encoding them")
 
     source = make_source(cfg.mic, cfg.wav, realtime=True).open()
     worker = Transcriber(
@@ -381,9 +347,8 @@ def run_session(cfg: Config, hooks, backend=None, stop: threading.Event | None =
         on_error=hooks.error,
         on_interim=getattr(hooks, "interim", None),
         recorder=recorder,
-        stream=stream,
+        partials=partials,
         timestamps=cfg.timestamps,
-        draft=draft,
     )
     worker.start()
     # Publish immediately: results accumulate on the worker, so a front end that quits
@@ -404,7 +369,7 @@ def run_session(cfg: Config, hooks, backend=None, stop: threading.Event | None =
                 threshold,
                 on_level=hooks.level,
                 cadence=cfg.cadence,
-                incremental=stream is not None,
+                incremental=partials.incremental,
                 min_speech=cfg.min_speech,
             ):
                 worker.submit(chunk)

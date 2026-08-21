@@ -23,12 +23,13 @@ from .backends import (
     DEFAULT_ALIGNER,
     DEFAULT_ASR,
     DTYPES,
+    PARTIAL_MODES,
     BackendUnavailable,
     available,
     describe_checkpoint,
     load_backend,
     local_checkpoints,
-    open_partial_draft,
+    open_partials,
     resolve_checkpoint,
 )
 from .diarize.offline import OfflineConfig
@@ -167,22 +168,16 @@ MAXGAP = typer.Option(
 PARTIALS = typer.Option(
     "reencode",
     "--partials",
-    help="How provisional text is computed: [b]reencode[/b] "
-    "(re-transcribe the prefix; heals, quadratic) or "
-    "[b]stream[/b] (feed only new audio to a cached decoder; "
-    "linear, appends). [dim]stream needs --backend mlx.[/]",
+    help="How provisional text is computed: [b]reencode[/b] (re-transcribe the prefix; "
+    "heals, quadratic), [b]x-draft[/b] (reencode, decoded against the previous pass as "
+    "a draft -- same text, far fewer passes; [i]experimental[/i]) or [b]stream[/b] "
+    "(feed only new audio to a cached decoder; linear, appends). "
+    "[dim]x-draft and stream need --backend mlx.[/]",
 )
 CHUNKSEC = typer.Option(
     2.0,
     "--stream-chunk",
     help="Seconds of audio per streaming decode [dim](--partials stream)[/].",
-)
-XDRAFT = typer.Option(
-    False,
-    "--x-partial-draft",
-    help="[b]Experimental.[/] Decode each partial against the previous "
-    "one as a speculative draft: same text, far fewer forward "
-    "passes. [dim]mlx + --partials reencode only.[/]",
 )
 REC = typer.Option(
     True, "--record/--no-record", help="Save per-utterance audio + manifest."
@@ -210,7 +205,6 @@ def _config(
     partials,
     stream_chunk,
     min_speech=MIN_SPEECH_SEC,
-    x_partial_draft=False,
 ) -> Config:
     """Validate CLI values and build a Config.
 
@@ -224,15 +218,9 @@ def _config(
         raise typer.BadParameter(f"{backend!r} unknown. Try `lt backends`.")
     if dtype not in ("auto", *DTYPES):
         raise typer.BadParameter(f"{dtype!r} unknown. Choose auto, {', '.join(DTYPES)}.")
-    if partials not in ("reencode", "stream"):
-        raise typer.BadParameter(f"{partials!r} unknown. Choose reencode or stream.")
-    # Say so rather than ignoring it. --partials stream does its own incremental decoding
-    # and has nothing for a draft to accelerate, so the combination was silently dropping
-    # the flag -- and the starter config listed both as adjacent lines to uncomment.
-    if x_partial_draft and partials == "stream":
+    if partials not in PARTIAL_MODES:
         raise typer.BadParameter(
-            "--x-partial-draft speeds up the default re-encoded partials; "
-            "--partials stream already decodes incrementally. Choose one."
+            f"{partials!r} unknown. Choose {', '.join(PARTIAL_MODES)}."
         )
     if stream_chunk <= 0:
         raise typer.BadParameter("--stream-chunk must be positive.")
@@ -263,7 +251,6 @@ def _config(
         partials=partials,
         stream_chunk_sec=stream_chunk,
         min_speech=min_speech,
-        x_partial_draft=x_partial_draft,
     )
 
 
@@ -849,7 +836,8 @@ def _tune_measure(cfg, backend_obj, samples):
 
     longest = max(samples, key=lambda s: s.seconds)
     steps = len(tn.bench_lengths(longest.seconds))
-    drafter = open_partial_draft(backend_obj, language=cfg.language)
+    drafted_decoder = open_partials(backend_obj, mode="x-draft", language=cfg.language)
+    drafter = drafted_decoder if drafted_decoder.mode == "x-draft" else None
     with Progress(
         TextColumn("  [dim]{task.description}[/]"),
         BarColumn(bar_width=28),
@@ -925,7 +913,6 @@ def tui(
     partials: str = PARTIALS,
     stream_chunk: float = CHUNKSEC,
     min_speech: float = MINSPEECH,
-    x_partial_draft: bool = XDRAFT,
 ):
     """Full-screen live view [dim](q quit · p pause · c clear)[/]."""
     from .tui import build_tui
@@ -949,7 +936,6 @@ def tui(
         partials=partials,
         stream_chunk=stream_chunk,
         min_speech=min_speech,
-        x_partial_draft=x_partial_draft,
     )
     # Load before entering full-screen: subprocess spawning breaks under Textual's stdout.
     ui = build_tui(cfg, _load(cfg))
@@ -981,7 +967,6 @@ def cli(
     partials: str = PARTIALS,
     stream_chunk: float = CHUNKSEC,
     min_speech: float = MINSPEECH,
-    x_partial_draft: bool = XDRAFT,
 ):
     """Stream transcriptions to stdout [dim](Ctrl-C to stop)[/]."""
     from rich.live import Live
@@ -1006,7 +991,6 @@ def cli(
         partials=partials,
         stream_chunk=stream_chunk,
         min_speech=min_speech,
-        x_partial_draft=x_partial_draft,
     )
 
     # Provisional text rewrites itself in place, which needs a terminal that can take the
@@ -1125,7 +1109,6 @@ def dictate(
     dtype: str = DTYPE,
     device: str = DEVICE,
     min_speech: float = MINSPEECH,
-    x_partial_draft: bool = XDRAFT,
 ):
     """Speech to stdout, then exit. [dim]A surface to compose on.[/]
 
@@ -1175,7 +1158,6 @@ def dictate(
         partials="reencode",
         stream_chunk=2.0,
         min_speech=min_speech,
-        x_partial_draft=x_partial_draft,
     )
     # Dictation wants a string, not a transcript. This is what skips loading the 0.6B
     # aligner as well as running it -- see load_backend(align=...).

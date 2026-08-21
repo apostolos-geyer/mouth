@@ -21,6 +21,10 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
+# The one sample rate this tool works in; imported rather than restated so a partial
+# decoder cannot disagree with the VAD that cut its audio.
+from .vad import SAMPLE_RATE
+
 # Upstream weights. Any of these can be replaced with a local directory -- notably a
 # quantised one built by `lt quantize` -- so nothing here is a hard-coded destiny.
 DEFAULT_ASR = "Qwen/Qwen3-ASR-1.7B"
@@ -62,30 +66,71 @@ class Backend(Protocol):
     ) -> Transcription: ...
 
 
-class PartialStream(Protocol):
-    """An in-progress utterance that accepts audio incrementally.
+@runtime_checkable
+class PartialDecoder(Protocol):
+    """How provisional text gets made for an utterance still in progress.
 
-    Deliberately *not* part of the Backend protocol: making it required there breaks every
-    existing implementer, including the fakes in the test suite, for a capability most
-    backends won't have. Reached through the Streaming protocol below instead.
+    Three of these exist and they differ in what they cost, not in what they are for, so
+    the engine holds exactly one and never asks which. They were three branches in
+    Transcriber before, which meant three copies of the emit tail, two spellings of "drop
+    the per-utterance state", and utterance-change detection at two different altitudes.
 
     Only ever used for provisional passes. The final pass is a plain transcribe() over the
     whole utterance, because that is what carries the forced aligner and what gets saved --
-    so nothing here can affect the transcript that lands on disk.
+    so nothing behind this protocol can affect the transcript that lands on disk.
     """
+
+    mode: str
+    """Which `--partials` value this actually is.
+
+    Not necessarily the one that was asked for: a backend that cannot stream falls back to
+    re-encoding, and the session says so rather than pretending.
+    """
+
+    incremental: bool
+    """Whether `text()` wants only the audio since the last call, rather than the whole
+    utterance so far. True only for a decoder carrying its own state across calls, and it
+    decides how the VAD cuts chunks -- so it is a property of the decoder, not a flag the
+    caller passes."""
 
     stable: str
-    """The prefix the decoder has committed to and won't revise.
+    """The prefix the decoder has committed to and won't revise, or "" when nothing is.
 
-    Monotonic: the largest surviving prefix across turns. A front end renders this
-    settled and the tail after it as still-moving.
+    Monotonic where it is non-empty. A front end renders this settled and the tail after
+    it as still-moving. Empty for anything that re-transcribes the prefix each pass,
+    because then nothing is settled and every word can still change.
     """
 
-    def feed(self, pcm: np.ndarray) -> str:
-        """Add audio, return the best text so far (cumulative, not a delta)."""
+    def text(self, pcm: np.ndarray) -> str:
+        """The best text so far. Cumulative, never a delta, whatever `incremental` says."""
 
-    def close(self) -> None:
-        """Drop the session's state. The next utterance starts clean."""
+    def reset(self) -> None:
+        """Drop per-utterance state. The next utterance starts clean."""
+
+
+class _ReencodePartials:
+    """The default: re-transcribe the whole prefix each pass.
+
+    No state, so `reset()` has nothing to do -- which is the point. It exists so that
+    "no special partial decoder" is a decoder like the others rather than a branch, and
+    the engine can hold one unconditionally.
+    """
+
+    mode = "reencode"
+    incremental = False
+    stable = ""
+
+    def __init__(self, backend: Backend, language: str):
+        self._backend = backend
+        self._language = language
+
+    def text(self, pcm: np.ndarray) -> str:
+        return self._backend.transcribe(
+            pcm, SAMPLE_RATE, language=self._language, timestamps=False
+        ).text
+
+    def reset(self) -> None:
+        pass
 
 
 @runtime_checkable
@@ -94,7 +139,7 @@ class Streaming(Protocol):
 
     def open_stream(
         self, *, language: str, chunk_sec: float = 2.0, max_context_sec: float = 30.0
-    ) -> PartialStream: ...
+    ) -> PartialDecoder: ...
 
 
 @runtime_checkable
@@ -341,6 +386,9 @@ class _MlxStream:
     also how often the text can change.
     """
 
+    mode = "stream"
+    incremental = True
+
     def __init__(self, session, language: str, chunk_sec: float, max_context_sec: float):
         self._session = session
         self._language = language
@@ -353,7 +401,7 @@ class _MlxStream:
         """mlx-qwen3-asr keeps `stable_text` monotonic by design; see PartialStream."""
         return (getattr(self._state, "stable_text", "") or "").strip()
 
-    def feed(self, pcm: np.ndarray) -> str:
+    def text(self, pcm: np.ndarray) -> str:
         if self._state is None:
             self._state = self._session.init_streaming(
                 language=self._language,
@@ -365,7 +413,7 @@ class _MlxStream:
         )
         return (self._state.text or "").strip()
 
-    def close(self) -> None:
+    def reset(self) -> None:
         # Dropping the state drops the KV cache with it; the next utterance must not
         # inherit this one's decoder context or its text.
         self._state = None
@@ -412,6 +460,10 @@ class _MlxDraftDecoder:
     #: would make a single mismatch expensive.
     WINDOW = 64
 
+    mode = "x-draft"
+    incremental = False
+    stable = ""
+
     #: How many recent tokens identify where we are in the previous answer. Too short and
     #: a common phrase matches in the wrong place; too long and nothing matches after a
     #: revision. 8 is roughly a clause.
@@ -440,7 +492,6 @@ class _MlxDraftDecoder:
         self._session = session
         self._language = language
         self._prev: list[int] = []
-        self._at: float | None = None
         self._ngram: dict = {}
         self._recent: deque[int] = deque(maxlen=self.RECENT)
         self._paying = True
@@ -448,10 +499,9 @@ class _MlxDraftDecoder:
     def reset(self) -> None:
         """Drop the draft. The next utterance's text is not this one's.
 
-        Only the draft: the accept history is per pass and transcribe() clears it.
+        Only the draft: the accept history is per pass and text() clears it.
         """
         self._prev = []
-        self._at = None
 
     def _index(self) -> None:
         """Index the previous answer by n-gram, once per pass.
@@ -487,7 +537,7 @@ class _MlxDraftDecoder:
                 return self._prev[at : at + self.WINDOW]
         return []
 
-    def transcribe(self, audio: np.ndarray, *, utterance: float) -> str:
+    def text(self, pcm: np.ndarray) -> str:
         import mlx.core as mx  # ty: ignore[unresolved-import]
         from mlx_qwen3_asr.audio import compute_features
         from mlx_qwen3_asr.generate import (
@@ -497,9 +547,6 @@ class _MlxDraftDecoder:
         )
         from mlx_qwen3_asr.tokenizer import parse_asr_output
 
-        if utterance != self._at:
-            self.reset()
-            self._at = utterance
         # Per pass, not per utterance: the first partials carry almost no text to draft
         # from, so they accept little through no fault of the policy. Latching on that
         # switched drafting off for exactly the long later passes it pays best on.
@@ -511,11 +558,11 @@ class _MlxDraftDecoder:
         dtype = self._session.dtype
         cfg = GenerationConfig(
             max_new_tokens=resolve_max_new_tokens(
-                2048, audio_duration_sec=len(audio) / 16000
+                2048, audio_duration_sec=len(pcm) / SAMPLE_RATE
             )
         )
 
-        mel, lens = compute_features(audio)
+        mel, lens = compute_features(pcm)
         feats, _ = model.audio_tower(mel.astype(dtype), lens)
         ids = mx.array(
             [
@@ -742,31 +789,27 @@ def resolve_dtype(backend: str, dtype: str | None) -> str:
     return dtype
 
 
-def open_partial_draft(backend: Backend, *, language: str) -> _MlxDraftDecoder | None:
-    """A drafted partial decoder, or None if this backend can't do one.
+PARTIAL_MODES = ("reencode", "stream", "x-draft")
 
-    Probed rather than required, for the same reason open_partial_stream is: it needs
-    step_many and a trimmable KV cache, which is an mlx_qwen3_asr fact, not a Backend one.
+
+def open_partials(
+    backend: Backend, *, mode: str, language: str, chunk_sec: float = 2.0
+) -> PartialDecoder:
+    """The partial decoder for a mode, falling back to re-encoding if it isn't available.
+
+    Always returns one, so the engine holds a decoder rather than an optional decoder plus
+    two branches. Check `.mode` against what you asked for to find out whether the backend
+    could do it -- falling back is a cost, not a failure, and a session should say so
+    rather than fail over a provisional pass.
+
+    Both capabilities are probed here rather than in the engine, which is what keeps the
+    method names and their keywords -- backend facts -- inside this module.
     """
-    if not isinstance(backend, Drafting):
-        return None
-    return backend.open_draft(language=language)
-
-
-def open_partial_stream(
-    backend: Backend, *, language: str, chunk_sec: float
-) -> PartialStream | None:
-    """A stream for provisional passes, or None if this backend has no incremental decode.
-
-    The capability is probed rather than required of the Backend protocol: making it a
-    required attribute breaks every existing implementer, including the fakes in the test
-    suite, for something most backends won't have. Probing it *here* rather than in the
-    engine is what keeps the method name and the constructor's keywords -- which are
-    backend facts -- inside this module.
-    """
-    if not isinstance(backend, Streaming):
-        return None
-    return backend.open_stream(language=language, chunk_sec=chunk_sec)
+    if mode == "stream" and isinstance(backend, Streaming):
+        return backend.open_stream(language=language, chunk_sec=chunk_sec)
+    if mode == "x-draft" and isinstance(backend, Drafting):
+        return backend.open_draft(language=language)
+    return _ReencodePartials(backend, language)
 
 
 def load_backend(

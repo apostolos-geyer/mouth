@@ -586,9 +586,10 @@ analysis below — is sound, exactly reusable, and worth at most 5%, and only pa
 an attention window completes. The cost is `generate`, which redecodes the entire
 transcript one token at a time at ~9ms per token regardless of what the token is.
 
-### `--x-partial-draft`: the previous partial is a free draft
+### `--partials x-draft`: the previous partial is a free draft
 
-Experimental, off by default, mlx + `--partials reencode` only.
+Experimental, mlx only. A third value of `--partials`, not a flag beside it — it changes
+how a partial is decoded, which is the one thing `--partials` selects.
 
 A partial's answer is almost exactly the previous partial's answer plus a few words. That
 makes the previous answer a draft, and `step_many` verifies a whole draft in one pass over
@@ -644,7 +645,7 @@ they are what gets saved, and they stay on the library's own `transcribe()`.
 
 ## Encoder + KV caching, and what's left
 
-`--partials stream` above uses the decoder-side half of this. The notes below are why it
+`--partials stream` uses the decoder-side half of this. The notes below are why it
 works, and what the encoder side would still add.
 
 ### Original analysis

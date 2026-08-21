@@ -435,7 +435,14 @@ def test_ctrl_c_during_model_load_exits_immediately(tmp_path):
 
     t0 = _t.monotonic()
     proc = subprocess.run(
-        [sys.executable, str(child)], capture_output=True, timeout=30, check=False
+        [sys.executable, str(child)],
+        capture_output=True,
+        timeout=30,
+        check=False,
+        # Scratch XDG_CONFIG_HOME: the child would otherwise read the developer's own
+        # config, and a setting it doesn't like exits 2 before the signal is ever sent --
+        # which reads as "the hard exit regressed" rather than "the config was rejected".
+        env={**os.environ, "XDG_CONFIG_HOME": str(tmp_path / "config")},
     )
     elapsed = _t.monotonic() - t0
 
@@ -821,16 +828,19 @@ class _SilentBackend:
 class _FakeStream:
     """Records what it was fed, so the engine's contract with a stream is observable."""
 
+    mode = "stream"
+    incremental = True
+
     def __init__(self):
         self.fed: list[int] = []
         self.closes = 0
         self.stable = ""
 
-    def feed(self, pcm):
+    def text(self, pcm):
         self.fed.append(len(pcm))
         return "hello " * len(self.fed)
 
-    def close(self):
+    def reset(self):
         self.closes += 1
         self.fed = []
 
@@ -841,7 +851,7 @@ def test_stream_is_reset_between_utterances():
     from localtranscription.vad import Chunk
 
     stream = _FakeStream()
-    worker = Transcriber(_FakeBackend(), "English", stream=stream)
+    worker = Transcriber(_FakeBackend(), "English", partials=stream)
     worker._transcribe_one(Chunk(np.zeros(1600, np.float32), 0.0, False, incremental=True))
     worker._transcribe_one(Chunk(np.zeros(1600, np.float32), 5.0, False, incremental=True))
     assert stream.closes == 1, "changing utterance should close the previous stream"
@@ -852,7 +862,7 @@ def test_final_closes_the_stream_even_when_it_yields_nothing():
     from localtranscription.vad import Chunk
 
     stream = _FakeStream()
-    worker = Transcriber(_SilentBackend(), "English", stream=stream)
+    worker = Transcriber(_SilentBackend(), "English", partials=stream)
     worker._transcribe_one(Chunk(np.zeros(1600, np.float32), 0.0, False, incremental=True))
     worker._transcribe_one(Chunk(np.zeros(1600, np.float32), 0.0, True))
     assert stream.closes >= 1
@@ -863,7 +873,7 @@ def test_incremental_partials_are_never_dropped_as_stale():
     from localtranscription.engine import Transcriber
     from localtranscription.vad import Chunk
 
-    worker = Transcriber(_FakeBackend(), "English", stream=_FakeStream())
+    worker = Transcriber(_FakeBackend(), "English", partials=_FakeStream())
     worker.submit(Chunk(np.zeros(1600, np.float32), 0.0, False, incremental=True))
     worker.submit(Chunk(np.zeros(1600, np.float32), 0.0, False, incremental=True))
     worker.submit(Chunk(np.zeros(1600, np.float32), 0.0, True))
@@ -1156,7 +1166,7 @@ def test_a_broken_config_stops_every_command_but_reports_itself(tmp_path):
     assert "line 2" in shown.stdout
 
 
-# ------------------------------------------------------- drafted partials (--x-partial-draft)
+# --------------------------------------------- drafted partials (--partials x-draft)
 
 
 def _drafter(prev, paying=True):
@@ -1229,8 +1239,12 @@ class _CountingDraft:
     def __init__(self):
         self.calls, self.resets = [], 0
 
-    def transcribe(self, audio, *, utterance):
-        self.calls.append(utterance)
+    mode = "x-draft"
+    incremental = False
+    stable = ""
+
+    def text(self, pcm):
+        self.calls.append(len(pcm))
         return "drafted"
 
     def reset(self):
@@ -1255,7 +1269,7 @@ def test_finals_never_take_the_drafted_path():
         "English",
         on_segment=segs.append,
         on_interim=interims.append,
-        draft=draft,
+        partials=draft,
         timestamps=False,
     )
     w.start()
@@ -1270,7 +1284,7 @@ def test_finals_never_take_the_drafted_path():
     w.submit(Chunk(audio, 1.0, final=True))
     assert w.close(timeout=5)
 
-    assert draft.calls == [1.0], "the partial should have been drafted"
+    assert len(draft.calls) == 1, "the partial should have been drafted"
     assert [s.text for s in interims] == ["drafted"]
     assert [s.text for s in segs] == ["hi"], "the final must come from the backend"
     assert draft.resets == 1, "a final ends the utterance and must drop its draft"
@@ -1414,7 +1428,7 @@ def test_tuned_config_is_valid_and_says_what_it_set():
     )
     data = tomllib.loads(text)
     assert data["backend"] == "mlx" and data["min-speech"] == 0.12
-    assert data["x-partial-draft"] is True
+    assert data["partials"] == "x-draft"
     # Bare, not under [tui]: `lt cli` draws partials too and `lt cadence` prints what
     # the schedule costs, so a table would leave both on the shipped defaults.
     assert (data["interim"], data["growth"], data["max-gap"]) == (0.15, 1.25, 1.2)
@@ -1467,8 +1481,7 @@ def test_a_capability_cannot_be_claimed_without_the_method():
         Backend,
         Drafting,
         Streaming,
-        open_partial_draft,
-        open_partial_stream,
+        open_partials,
     )
 
     class Liar:
@@ -1484,5 +1497,6 @@ def test_a_capability_cannot_be_claimed_without_the_method():
     liar = Liar()
     assert isinstance(liar, Backend)
     assert not isinstance(liar, Streaming) and not isinstance(liar, Drafting)
-    assert open_partial_draft(liar, language="English") is None
-    assert open_partial_stream(liar, language="English", chunk_sec=2.0) is None
+    # And the factory hands back a re-encoding decoder rather than taking their word.
+    for asked in ("x-draft", "stream"):
+        assert open_partials(liar, mode=asked, language="English").mode == "reencode"
