@@ -41,7 +41,8 @@ dev = [
 ]
 
 [tool.ruff]
-# The codebase wraps at ~92; p99 of the existing lines is 92 and the intent is visible.
+# The hand-written code wrapped at ~92 (p99 of the lines before formatting), so the
+# formatter was pointed at the same width rather than black's 88.
 line-length = 92
 src = ["src", "tests"]
 

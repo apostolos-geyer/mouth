@@ -105,9 +105,9 @@ def _gram(unit: np.ndarray) -> np.ndarray:
     return np.asarray(out, dtype=np.float32)
 
 
-WINDOW_SEC = 10.0          # what the segmentation model was exported for
-LOCAL_SPEAKERS = 3         # powerset width: at most 3 voices inside one window
-EMBED_BATCH = 3            # the embedding model takes exactly one waveform per local speaker
+WINDOW_SEC = 10.0  # what the segmentation model was exported for
+LOCAL_SPEAKERS = 3  # powerset width: at most 3 voices inside one window
+EMBED_BATCH = 3  # the embedding model takes exactly one waveform per local speaker
 
 # A local speaker with less than this much voice in a window gets no embedding: too few
 # frames and the vector describes the mask, not the person.
@@ -152,7 +152,7 @@ _CLASS_TABLE = class_table(powerset())
 
 @dataclass
 class OfflineConfig:
-    hop_sec: float = 1.0            # distance between window starts; 10 looks per frame
+    hop_sec: float = 1.0  # distance between window starts; 10 looks per frame
     # Cosine distance above which complete linkage refuses to merge. On the interview this
     # was measured against, 0.90-1.05 all give the correct speaker count and the nearest
     # merge heights are 0.87 and 1.07, so 0.95 sits in the middle of a real plateau rather
@@ -189,8 +189,9 @@ def _reliable(voiced: np.ndarray, shared: np.ndarray) -> np.ndarray:
     return np.ones(len(voiced), dtype=bool)  # everything, which is always enough
 
 
-def cluster_embeddings(embeddings: np.ndarray, reliable: np.ndarray,
-                       cfg: OfflineConfig) -> np.ndarray:
+def cluster_embeddings(
+    embeddings: np.ndarray, reliable: np.ndarray, cfg: OfflineConfig
+) -> np.ndarray:
     """Embeddings -> a global speaker id each.
 
     `reliable` marks the ones clean enough to decide where the clusters *are*; the
@@ -248,11 +249,13 @@ class OfflineDiarizer:
         self.cfg = cfg or OfflineConfig()
         say = on_status or (lambda m: None)
         say("loading segmentation")
-        self._seg = resolve(DIARIZATION_REPO, self.cfg.segmentation_model,
-                            self.cfg.compute_units)
+        self._seg = resolve(
+            DIARIZATION_REPO, self.cfg.segmentation_model, self.cfg.compute_units
+        )
         say("loading speaker embedding")
-        self._emb = resolve(DIARIZATION_REPO, self.cfg.embedding_model,
-                            self.cfg.compute_units)
+        self._emb = resolve(
+            DIARIZATION_REPO, self.cfg.embedding_model, self.cfg.compute_units
+        )
         self.detail = f"coreml · {self.cfg.compute_units.lower()}"
         self._classes = powerset()
         self._wave_buf: np.ndarray | None = None
@@ -268,7 +271,9 @@ class OfflineDiarizer:
         """
         return _CLASS_TABLE[scores.argmax(axis=1)]
 
-    def _segment_all(self, audio: np.ndarray, starts: list[int], win: int) -> list[np.ndarray]:
+    def _segment_all(
+        self, audio: np.ndarray, starts: list[int], win: int
+    ) -> list[np.ndarray]:
         """Segment every window, `segmentation_batch` at a time.
 
         Windows are cut per batch rather than stacked up front: at a 1s hop, materialising
@@ -280,18 +285,18 @@ class OfflineDiarizer:
         buf = np.zeros((batch, 1, win), dtype=np.float16)
         out: list[np.ndarray] = []
         for i in range(0, len(starts), batch):
-            group = starts[i:i + batch]
+            group = starts[i : i + batch]
             for j, s0 in enumerate(group):
-                buf[j, 0] = audio[s0:s0 + win]
+                buf[j, 0] = audio[s0 : s0 + win]
             # Only the tail batch is ever short, and only its unused rows need clearing --
             # every other row was just overwritten. Zeroing all 32 costs a 10 MB memset per
             # batch, ~533 MB of it dead over a 28-minute recording.
             if len(group) < batch:
-                buf[len(group):] = 0.0
+                buf[len(group) :] = 0.0
             result = self._seg.predict({"audio": buf})
             scores = np.asarray(next(iter(result.values())), dtype=np.float32)
             scores = scores.reshape(batch, -1, n_classes)
-            out.extend(self._decode(row) for row in scores[:len(group)])
+            out.extend(self._decode(row) for row in scores[: len(group)])
         return out
 
     def _embed(self, window: np.ndarray, active: np.ndarray) -> np.ndarray:
@@ -309,7 +314,9 @@ class OfflineDiarizer:
         out = self._emb.predict({"waveform": self._wave_buf, "mask": mask})
         emb = out.get("embedding")
         if emb is None:  # the converted models don't all agree on the output name
-            emb = next(v for v in out.values() if np.ndim(v) == 2 and np.shape(v)[0] == EMBED_BATCH)
+            emb = next(
+                v for v in out.values() if np.ndim(v) == 2 and np.shape(v)[0] == EMBED_BATCH
+            )
         return np.asarray(emb, dtype=np.float32)
 
     # clustering lives at module scope; see cluster_embeddings
@@ -357,7 +364,7 @@ class OfflineDiarizer:
             # Frames with two or more speakers -- the same thing as "k overlaps someone
             # else", computed once per window instead of once per speaker.
             multi = active.sum(axis=1) > 1
-            emb = self._embed(signal[s0:s0 + win], active)
+            emb = self._embed(signal[s0 : s0 + win], active)
             for k in np.flatnonzero(enough):
                 vectors.append(emb[k])
                 owners.append((w_i, int(k)))
@@ -401,10 +408,13 @@ class OfflineDiarizer:
             if not on.any():
                 continue
             edges = np.diff(on.astype(np.int8), prepend=0, append=0)
-            for a, b in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1),
-                            strict=True):
+            for a, b in zip(
+                np.flatnonzero(edges == 1), np.flatnonzero(edges == -1), strict=True
+            ):
                 turns.append(Turn(a * frame_sec, b * frame_sec, spk))
 
         limit = total / sample_rate
-        clipped = [Turn(t.start, min(t.end, limit), t.speaker) for t in turns if t.start < limit]
+        clipped = [
+            Turn(t.start, min(t.end, limit), t.speaker) for t in turns if t.start < limit
+        ]
         return merge_turns(clipped, max_gap=cfg.max_gap, min_duration=cfg.min_duration)

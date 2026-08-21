@@ -49,8 +49,7 @@ def cached_threshold(mic: int | None, path: Path | None = None) -> float | None:
     return value if value > 0 else None
 
 
-def remember_threshold(mic: int | None, value: float,
-                       path: Path | None = None) -> None:
+def remember_threshold(mic: int | None, value: float, path: Path | None = None) -> None:
     """Record a calibration for next time. Best-effort: never fails a session."""
     path = path or paths.calibration_file()
     try:
@@ -94,7 +93,7 @@ class MicSource:
 
     def close(self):
         if self._stream is not None:
-            self._stream.stop()   # ty: ignore[unresolved-attribute]
+            self._stream.stop()  # ty: ignore[unresolved-attribute]
             self._stream.close()  # ty: ignore[unresolved-attribute]
 
     def calibrate(self, seconds: float = 1.0, stop=None) -> float:

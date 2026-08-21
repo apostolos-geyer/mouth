@@ -56,11 +56,12 @@ def load(path: str, compute_units: str = "ALL"):
         )
     if not Path(path).exists():
         raise DiarizationUnavailable(f"no CoreML model at {path}")
-    return ct.models.CompiledMLModel(str(path), compute_units=getattr(ct.ComputeUnit, compute_units))
+    return ct.models.CompiledMLModel(
+        str(path), compute_units=getattr(ct.ComputeUnit, compute_units)
+    )
 
 
-def resolve(repo: str, name: str, compute_units: str = "ALL",
-            override: str | None = None):
+def resolve(repo: str, name: str, compute_units: str = "ALL", override: str | None = None):
     """Fetch `name`.mlmodelc out of `repo` (or use a local override) and load it."""
     if override:
         return load(str(Path(override)), compute_units)

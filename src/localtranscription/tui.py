@@ -232,8 +232,10 @@ def build_tui(cfg, backend):
             self.history.append(0.0 if self.paused else self.rms)
             marker = int(db_frac(self.threshold) * self.METER_W)
             tag = (
-                f"[{YELLOW}]PAUSED[/]" if self.paused
-                else f"[b {GREEN}]SPEECH[/]" if self.in_speech
+                f"[{YELLOW}]PAUSED[/]"
+                if self.paused
+                else f"[b {GREEN}]SPEECH[/]"
+                if self.in_speech
                 else f"[{DIM}]idle  [/]"
             )
             self.meter.update(
@@ -247,16 +249,18 @@ def build_tui(cfg, backend):
 
             q = self.worker.backlog if self.worker else 0
             self.stats.update(
-                "  ".join([
-                    cell("elapsed", fmt_clock(time.monotonic() - self.started)),
-                    cell("utts", self.n_utts),
-                    cell("words", self.n_words),
-                    cell("queue", q, YELLOW if q else TEXT),
-                    cell("thr", f"{self.threshold:.4f}"),
-                    cell("lang", cfg.language, BLUE),
-                    cell("via", getattr(backend, "name", "?"), MAGENTA),
-                    (f"[{RED}]●[/] [{DIM}]rec[/]" if cfg.record else ""),
-                ])
+                "  ".join(
+                    [
+                        cell("elapsed", fmt_clock(time.monotonic() - self.started)),
+                        cell("utts", self.n_utts),
+                        cell("words", self.n_words),
+                        cell("queue", q, YELLOW if q else TEXT),
+                        cell("thr", f"{self.threshold:.4f}"),
+                        cell("lang", cfg.language, BLUE),
+                        cell("via", getattr(backend, "name", "?"), MAGENTA),
+                        (f"[{RED}]●[/] [{DIM}]rec[/]" if cfg.record else ""),
+                    ]
+                )
                 + f"\n[{DIM}]{self.status_text}[/]"
             )
 

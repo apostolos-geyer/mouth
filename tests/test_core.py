@@ -182,8 +182,14 @@ def test_recorder_writes_audio_and_manifest(tmp_path):
     audio = rng.normal(0, 0.1, SAMPLE_RATE * 2).astype(np.float32)
     rec.note_interim(1.0, 0.4, "hello", 0.2)
     rec.note_interim(1.0, 0.8, "hello world", 0.3)
-    rec.add(audio, 1.0, "hello world", [{"text": "hello", "start": 1.0, "end": 1.4}],
-            "English", 0.5)
+    rec.add(
+        audio,
+        1.0,
+        "hello world",
+        [{"text": "hello", "start": 1.0, "end": 1.4}],
+        "English",
+        0.5,
+    )
 
     entries = load_manifest(tmp_path / "sess")
     assert len(entries) == 1
@@ -224,8 +230,10 @@ def test_interims_isolated_per_utterance(tmp_path):
 
 
 def test_write_outputs_produces_four_files(tmp_path):
-    words = [{"text": "hello", "start": 0.0, "end": 0.5},
-             {"text": "world", "start": 0.5, "end": 1.0}]
+    words = [
+        {"text": "hello", "start": 0.0, "end": 0.5},
+        {"text": "world", "start": 0.5, "end": 1.0},
+    ]
     write_outputs(tmp_path, [(0.0, "hello world")], words, stem="t")
     for ext in ("txt", "words.json", "srt", "timestamped.md"):
         p = tmp_path / f"t.{ext}"
@@ -252,6 +260,7 @@ class SlowBackend:
 
     def transcribe(self, audio, sample_rate, *, language, timestamps):
         import time as _t
+
         self.calls += 1
         _t.sleep(self.delay)
         return Transcription(text="x")
@@ -405,7 +414,8 @@ def test_ctrl_c_during_model_load_exits_immediately(tmp_path):
     import time as _t
 
     child = tmp_path / "child.py"
-    child.write_text(textwrap.dedent(f"""
+    child.write_text(
+        textwrap.dedent(f"""
         import concurrent.futures, sys, time
         sys.path.insert(0, {str(Path(__file__).parent.parent / "src")!r})
         import localtranscription.app as m
@@ -420,11 +430,13 @@ def test_ctrl_c_during_model_load_exits_immediately(tmp_path):
         m._load = boom          # stub the backend load seam: never touch a real model
         sys.argv = ["lt", "tui", "--no-record"]
         m.main()
-    """))
+    """)
+    )
 
     t0 = _t.monotonic()
-    proc = subprocess.run([sys.executable, str(child)], capture_output=True,
-                          timeout=30, check=False)
+    proc = subprocess.run(
+        [sys.executable, str(child)], capture_output=True, timeout=30, check=False
+    )
     elapsed = _t.monotonic() - t0
 
     assert elapsed < 10, f"exit took {elapsed:.1f}s; atexit is blocking"
@@ -460,7 +472,9 @@ def test_engine_offsets_words_from_backend_onto_session_clock():
         name, detail = "fake", "fake"
 
         def transcribe(self, audio, sample_rate, *, language, timestamps):
-            return Transcription(text="a b", words=[Word("a", 0.0, 0.4), Word("b", 0.5, 0.9)])
+            return Transcription(
+                text="a b", words=[Word("a", 0.0, 0.4), Word("b", 0.5, 0.9)]
+            )
 
     w = Transcriber(Two(), "English")
     w._transcribe_one(Chunk(np.zeros(1600, dtype=np.float32), 10.0, final=True))
@@ -528,8 +542,12 @@ def test_mlx_adapter_passes_dtype_and_aligner_in_the_shapes_the_library_wants(mo
     assert isinstance(seen["aligner_dtype"], mx.Dtype)
     assert "ForcedAligner" in seen["aligner_model"]
 
-    b.transcribe(np.zeros(1600, dtype=np.float32), 16000, language="English", timestamps=True)
-    b.transcribe(np.zeros(1600, dtype=np.float32), 16000, language="English", timestamps=False)
+    b.transcribe(
+        np.zeros(1600, dtype=np.float32), 16000, language="English", timestamps=True
+    )
+    b.transcribe(
+        np.zeros(1600, dtype=np.float32), 16000, language="English", timestamps=False
+    )
     final, partial = seen["calls"]
     assert isinstance(final["forced_aligner"], FakeAligner), "finals need the instance"
     assert partial["forced_aligner"] is None, "partials must skip the aligner entirely"
@@ -537,6 +555,7 @@ def test_mlx_adapter_passes_dtype_and_aligner_in_the_shapes_the_library_wants(mo
 
 
 # --------------------------------------------------------------- upstream contract
+
 
 def test_mlx_loader_upstream_symbols_still_exist():
     """Pin the mlx_qwen3_asr internals backends._load_mlx_model reimplements.
@@ -584,6 +603,7 @@ def test_mlx_quantize_supports_the_modes_we_offer():
 
 
 # --------------------------------------------------------------- xdg paths
+
 
 def test_paths_default_under_xdg(monkeypatch, tmp_path):
     from localtranscription import paths
@@ -646,6 +666,7 @@ def test_config_defaults_are_independent_instances(monkeypatch, tmp_path):
 
 # ------------------------------------------------- checkpoint reference resolution
 
+
 def _make_checkpoint(root: Path, name: str) -> Path:
     d = root / name
     d.mkdir(parents=True)
@@ -659,7 +680,9 @@ def test_bare_name_resolves_against_the_checkpoint_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     models = tmp_path / "localtranscription" / "models"
     _make_checkpoint(models, "qwen3-asr-1.7b-q8g64")
-    assert resolve_checkpoint("qwen3-asr-1.7b-q8g64") == str(models / "qwen3-asr-1.7b-q8g64")
+    assert resolve_checkpoint("qwen3-asr-1.7b-q8g64") == str(
+        models / "qwen3-asr-1.7b-q8g64"
+    )
 
 
 def test_stale_models_prefix_still_resolves(monkeypatch, tmp_path):
@@ -673,7 +696,9 @@ def test_stale_models_prefix_still_resolves(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     models = tmp_path / "localtranscription" / "models"
     _make_checkpoint(models, "qwen3-asr-1.7b-q8g64")
-    assert resolve_checkpoint("models/qwen3-asr-1.7b-q8g64") == str(models / "qwen3-asr-1.7b-q8g64")
+    assert resolve_checkpoint("models/qwen3-asr-1.7b-q8g64") == str(
+        models / "qwen3-asr-1.7b-q8g64"
+    )
 
 
 def test_existing_path_wins(monkeypatch, tmp_path):
@@ -716,6 +741,7 @@ def test_missing_checkpoint_dir_is_not_a_crash(monkeypatch, tmp_path):
 
 # ------------------------------------------------------------ incremental partials
 
+
 def _speech_frames(voiced_frames: int, tail: int = 40):
     from localtranscription.vad import FRAME_LEN
 
@@ -730,22 +756,26 @@ def test_incremental_partials_do_not_resend_the_prefix():
 
     frames = _speech_frames(400)
     whole = list(segment_utterances(iter(frames), 0.1, cadence=Cadence()))
-    delta = list(segment_utterances(iter(frames), 0.1, cadence=Cadence(),
-                                    incremental=True))
+    delta = list(segment_utterances(iter(frames), 0.1, cadence=Cadence(), incremental=True))
 
     def partial_audio(cs):
         return sum(len(c.audio) for c in cs if not c.final) / SAMPLE_RATE
+
     final = next(c for c in delta if c.final)
-    assert partial_audio(delta) <= len(final.audio) / SAMPLE_RATE + 0.1, \
+    assert partial_audio(delta) <= len(final.audio) / SAMPLE_RATE + 0.1, (
         "incremental partials should never exceed the utterance's own length"
+    )
     assert partial_audio(whole) > 2 * partial_audio(delta)
 
 
 def test_incremental_partials_are_flagged():
     from localtranscription.vad import Cadence, segment_utterances
 
-    chunks = list(segment_utterances(iter(_speech_frames(400)), 0.1,
-                                     cadence=Cadence(), incremental=True))
+    chunks = list(
+        segment_utterances(
+            iter(_speech_frames(400)), 0.1, cadence=Cadence(), incremental=True
+        )
+    )
     assert all(c.incremental for c in chunks if not c.final)
     assert not any(c.incremental for c in chunks if c.final)
 
@@ -754,10 +784,18 @@ def test_final_chunk_still_carries_the_whole_utterance():
     """Finals run the aligner and get saved, so they must never be a delta."""
     from localtranscription.vad import Cadence, segment_utterances
 
-    whole = [c for c in segment_utterances(iter(_speech_frames(400)), 0.1, cadence=Cadence())
-             if c.final]
-    delta = [c for c in segment_utterances(iter(_speech_frames(400)), 0.1,
-                                           cadence=Cadence(), incremental=True) if c.final]
+    whole = [
+        c
+        for c in segment_utterances(iter(_speech_frames(400)), 0.1, cadence=Cadence())
+        if c.final
+    ]
+    delta = [
+        c
+        for c in segment_utterances(
+            iter(_speech_frames(400)), 0.1, cadence=Cadence(), incremental=True
+        )
+        if c.final
+    ]
     assert len(whole) == len(delta) == 1
     assert len(whole[0].audio) == len(delta[0].audio)
 
@@ -901,7 +939,8 @@ def _dictate(tmp_path, spec, *args):
     sf.write(wav, np.concatenate(frames(spec)), SAMPLE_RATE)
 
     child = tmp_path / "child.py"
-    child.write_text(textwrap.dedent(f"""
+    child.write_text(
+        textwrap.dedent(f"""
         import sys
         sys.path.insert(0, {str(Path(__file__).parent.parent / "src")!r})
         import localtranscription.app as m
@@ -916,12 +955,14 @@ def _dictate(tmp_path, spec, *args):
         m._load = lambda *a, **k: Fake()
         sys.argv = ["lt", "dictate", "--wav", {str(wav)!r}, *{list(args)!r}]
         m.main()
-    """))
+    """)
+    )
     # XDG_CONFIG_HOME at a scratch dir: the child would otherwise read the developer's
     # own config.toml, whose whole purpose is to change what `lt dictate` does.
     env = {**os.environ, "XDG_CONFIG_HOME": str(tmp_path / "config")}
-    return subprocess.run([sys.executable, str(child)], capture_output=True,
-                          timeout=180, env=env, check=False)
+    return subprocess.run(
+        [sys.executable, str(child)], capture_output=True, timeout=180, env=env, check=False
+    )
 
 
 def test_dictate_puts_only_the_text_on_stdout(tmp_path):
@@ -991,8 +1032,12 @@ def test_dictate_hold_keeps_going_through_pauses(tmp_path):
     assert holds.stdout == b"hello there hello there"
 
     def finals(p):
-        return sum(json.loads(line)["event"] == "final"
-                   for line in p.stderr.splitlines() if line.strip())
+        return sum(
+            json.loads(line)["event"] == "final"
+            for line in p.stderr.splitlines()
+            if line.strip()
+        )
+
     assert finals(stops) == 1
     assert finals(holds) == 2
 
@@ -1094,8 +1139,9 @@ def test_a_flag_still_beats_the_file(tmp_path):
     assert from_file.exit_code == 0
     assert "first text after 2s" in from_file.stdout
 
-    typed = _invoke(tmp_path, "[cadence]\ninterim = 2.0\n", "cadence", "10",
-                    "--interim", "0.5")
+    typed = _invoke(
+        tmp_path, "[cadence]\ninterim = 2.0\n", "cadence", "10", "--interim", "0.5"
+    )
     assert typed.exit_code == 0
     assert "first text after 0.5s" in typed.stdout
 
@@ -1141,7 +1187,7 @@ def test_draft_realigns_after_a_revision():
     the utterance -- which is precisely what happens when a partial heals.
     """
     prev = [1, 2, 3, 4, 5, 6, 7, 8]
-    generated = [1, 2, 99, 3, 4]          # 99 inserted; 3,4 are prev[2:4]
+    generated = [1, 2, 99, 3, 4]  # 99 inserted; 3,4 are prev[2:4]
     assert _drafter(prev)._draft(generated)[:4] == [5, 6, 7, 8]
 
 
@@ -1189,8 +1235,14 @@ def test_finals_never_take_the_drafted_path():
 
     draft = _CountingDraft()
     segs, interims = [], []
-    w = Transcriber(_FakeBackend(), "English", on_segment=segs.append,
-                    on_interim=interims.append, draft=draft, timestamps=False)
+    w = Transcriber(
+        _FakeBackend(),
+        "English",
+        on_segment=segs.append,
+        on_interim=interims.append,
+        draft=draft,
+        timestamps=False,
+    )
     w.start()
     audio = np.zeros(FRAME_LEN, dtype=np.float32)
     w.submit(Chunk(audio, 1.0, final=False))
@@ -1219,13 +1271,17 @@ def test_drafted_decode_upstream_symbols_still_exist():
     pytest.importorskip("mlx_qwen3_asr")
     from mlx_qwen3_asr import audio, generate, tokenizer
 
-    missing = [n for mod, n in (
-        (audio, "compute_features"),
-        (generate, "GenerationConfig"),
-        (generate, "resolve_max_new_tokens"),
-        (generate, "_detect_repetition"),
-        (tokenizer, "parse_asr_output"),
-    ) if not hasattr(mod, n)]
+    missing = [
+        n
+        for mod, n in (
+            (audio, "compute_features"),
+            (generate, "GenerationConfig"),
+            (generate, "resolve_max_new_tokens"),
+            (generate, "_detect_repetition"),
+            (tokenizer, "parse_asr_output"),
+        )
+        if not hasattr(mod, n)
+    ]
     assert not missing, (
         f"mlx_qwen3_asr no longer exports {missing}; backends._MlxDraftDecoder needs them."
     )
@@ -1244,7 +1300,7 @@ def test_voiced_frames_are_not_clip_length():
 
     audio = np.concatenate(frames([(False, 0.3), (True, 0.2), (False, 0.5)]))
     voiced = tn.count_voiced(audio, 0.01)
-    assert 5 <= voiced <= 8, voiced          # ~0.2s of speech, not the 1.0s clip
+    assert 5 <= voiced <= 8, voiced  # ~0.2s of speech, not the 1.0s clip
     assert tn.count_voiced(audio, 10.0) == 0  # nothing clears an absurd threshold
     assert tn.count_voiced(np.zeros(10, dtype=np.float32), 0.01) == 0
 
@@ -1255,8 +1311,9 @@ def test_min_speech_sits_under_your_shortest_word():
     from localtranscription.vad import MIN_SPEECH_SEC
 
     def sample(voiced_sec):
-        return tn.Sample("", np.zeros(16, dtype=np.float32),
-                         int(voiced_sec * SAMPLE_RATE / FRAME_LEN))
+        return tn.Sample(
+            "", np.zeros(16, dtype=np.float32), int(voiced_sec * SAMPLE_RATE / FRAME_LEN)
+        )
 
     got = tn.suggest_min_speech([sample(0.2), sample(0.9)])
     assert 0.05 <= got < 0.2, got
@@ -1331,8 +1388,15 @@ def test_tuned_config_is_valid_and_says_what_it_set():
 
     from localtranscription import tune as tn
 
-    text = tn.render(backend="mlx", model="q8", aligner="al", min_speech=0.12,
-                     profile=tn.PROFILES[1], drafting=True, note="M3 Max")
+    text = tn.render(
+        backend="mlx",
+        model="q8",
+        aligner="al",
+        min_speech=0.12,
+        profile=tn.PROFILES[1],
+        drafting=True,
+        note="M3 Max",
+    )
     data = tomllib.loads(text)
     assert data["backend"] == "mlx" and data["min-speech"] == 0.12
     assert data["x-partial-draft"] is True

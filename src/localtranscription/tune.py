@@ -46,8 +46,9 @@ class Machine:
 def _sysctl(key: str) -> str:
     """One sysctl value, or "" if this isn't a Mac or the key is gone."""
     try:
-        out = subprocess.run(["sysctl", "-n", key], capture_output=True, text=True,
-                             timeout=2, check=False)
+        out = subprocess.run(
+            ["sysctl", "-n", key], capture_output=True, text=True, timeout=2, check=False
+        )
     except (OSError, subprocess.SubprocessError):
         return ""
     return out.stdout.strip() if out.returncode == 0 else ""
@@ -101,8 +102,13 @@ def count_voiced(audio: np.ndarray, threshold: float) -> int:
     return int((np.sqrt((frames.astype(np.float64) ** 2).mean(axis=1)) > threshold).sum())
 
 
-def suggest_min_speech(samples: list[Sample], *, margin: float = 0.75,
-                       floor: float = 0.05, ceiling: float = 0.3) -> float:
+def suggest_min_speech(
+    samples: list[Sample],
+    *,
+    margin: float = 0.75,
+    floor: float = 0.05,
+    ceiling: float = 0.3,
+) -> float:
     """A gate the shortest thing you actually said clears, with room to spare.
 
     Below the shortest sample rather than at it: you will say a shorter one tomorrow. The
@@ -164,12 +170,21 @@ class Profile:
 
 
 PROFILES = [
-    Profile("relaxed", Cadence(0.4, 1.6, 3.0),
-            "the shipped default: fewest passes, stalest text"),
-    Profile("snappy", Cadence(0.15, 1.25, 1.2),
-            "text on screen stays close; keeps up even if drafting stops paying"),
-    Profile("aggressive", Cadence(0.15, 1.15, 0.6),
-            "freshest text; needs drafting to be affordable at all"),
+    Profile(
+        "relaxed",
+        Cadence(0.4, 1.6, 3.0),
+        "the shipped default: fewest passes, stalest text",
+    ),
+    Profile(
+        "snappy",
+        Cadence(0.15, 1.25, 1.2),
+        "text on screen stays close; keeps up even if drafting stops paying",
+    ),
+    Profile(
+        "aggressive",
+        Cadence(0.15, 1.15, 0.6),
+        "freshest text; needs drafting to be affordable at all",
+    ),
 ]
 
 
@@ -179,8 +194,8 @@ class Verdict:
 
     profile: Profile
     partials: int
-    compute: float          # seconds of inference, drafted
-    compute_full: float     # the same without drafting
+    compute: float  # seconds of inference, drafted
+    compute_full: float  # the same without drafting
     stale_avg: float
     stale_max: float
     length: float
@@ -211,8 +226,9 @@ class Verdict:
 SUSTAINABLE = 0.75
 
 
-def evaluate(profile: Profile, drafted: CostModel, full: CostModel,
-             length: float) -> Verdict:
+def evaluate(
+    profile: Profile, drafted: CostModel, full: CostModel, length: float
+) -> Verdict:
     """Play a profile's schedule out over one utterance and add up what it would cost.
 
     Staleness is the number that describes the experience: at each partial, how far behind
@@ -257,9 +273,16 @@ def recommend(verdicts: list[Verdict]) -> Verdict:
 # ---------------------------------------------------------------- the config
 
 
-def render(*, backend: str, model: str | None, aligner: str | None,
-           min_speech: float, profile: Profile, drafting: bool,
-           note: str = "") -> str:
+def render(
+    *,
+    backend: str,
+    model: str | None,
+    aligner: str | None,
+    min_speech: float,
+    profile: Profile,
+    drafting: bool,
+    note: str = "",
+) -> str:
     """The config file this tuning run implies, as text to show before it is written."""
     lines = [
         "# localtranscription -- written by `lt tune`.",

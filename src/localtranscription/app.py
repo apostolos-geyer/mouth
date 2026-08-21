@@ -52,13 +52,18 @@ app = typer.Typer(
     help="Live local transcription with [b]Qwen3-ASR[/b] + forced alignment.",
 )
 
-CONFIG = typer.Option(None, "--config", envvar="LT_CONFIG", metavar="PATH",
-                      help="Config file to read "
-                           "[dim](default ~/.config/localtranscription/config.toml)[/].")
+CONFIG = typer.Option(
+    None,
+    "--config",
+    envvar="LT_CONFIG",
+    metavar="PATH",
+    help="Config file to read [dim](default ~/.config/localtranscription/config.toml)[/].",
+)
 
 
 class _Root(NamedTuple):
     """What the root callback resolved, for `lt config` to report."""
+
     explicit: Path | None
     path: Path | None
     defaults: dict
@@ -98,8 +103,9 @@ def _root(ctx: typer.Context, config: Path | None = CONFIG):
         return
     try:
         path = cfgfile.locate(config)
-        defaults = cfgfile.default_map(cfgfile.read(path), _params(ctx.command)) \
-            if path else {}
+        defaults = (
+            cfgfile.default_map(cfgfile.read(path), _params(ctx.command)) if path else {}
+        )
     except cfgfile.ConfigError as e:
         raise typer.BadParameter(str(e), param_hint="--config") from e
     # This is the whole mechanism: click consults default_map per parameter during
@@ -112,44 +118,94 @@ def _root(ctx: typer.Context, config: Path | None = CONFIG):
 OUT = typer.Option(paths.out_dir(), "--out", "-o", help="Where transcripts go.")
 LANG = typer.Option("English", "--language", "-l", help="ASR language hint.")
 DEVICE = typer.Option("mps", "--device", help="torch device [dim](torch backend only)[/].")
-BACKEND = typer.Option("torch", "--backend", "-b",
-                       help="Inference backend: [b]torch[/b] or [b]mlx[/b].")
-MODEL = typer.Option(DEFAULT_ASR, "--model", "-M",
-                     help="ASR weights: a HF repo id or a local directory "
-                          "[dim](e.g. one built by `lt quantize`)[/].")
-ALIGNER = typer.Option(DEFAULT_ALIGNER, "--aligner",
-                       help="Forced-aligner weights: HF repo id or local directory.")
-DTYPE = typer.Option("auto", "--dtype",
-                     help="Compute precision: [b]auto[/b], bf16, fp16 or fp32. "
-                          "[dim]auto = bf16 on torch, fp16 on mlx.[/]")
+BACKEND = typer.Option(
+    "torch", "--backend", "-b", help="Inference backend: [b]torch[/b] or [b]mlx[/b]."
+)
+MODEL = typer.Option(
+    DEFAULT_ASR,
+    "--model",
+    "-M",
+    help="ASR weights: a HF repo id or a local directory "
+    "[dim](e.g. one built by `lt quantize`)[/].",
+)
+ALIGNER = typer.Option(
+    DEFAULT_ALIGNER,
+    "--aligner",
+    help="Forced-aligner weights: HF repo id or local directory.",
+)
+DTYPE = typer.Option(
+    "auto",
+    "--dtype",
+    help="Compute precision: [b]auto[/b], bf16, fp16 or fp32. "
+    "[dim]auto = bf16 on torch, fp16 on mlx.[/]",
+)
 MIC = typer.Option(None, "--mic", "-m", help="Input device index.")
 WAV = typer.Option(None, "--wav", help="Replay a 16kHz wav instead of the mic.")
 THRESH = typer.Option(None, "--threshold", "-t", help="RMS VAD threshold [dim](auto)[/].")
-MINSPEECH = typer.Option(MIN_SPEECH_SEC, "--min-speech",
-                         help="Voiced audio an utterance needs to count at all. "
-                              "[dim]Lower for single words; a spoken \"Claude\" only "
-                              "just clears the default.[/]")
-FIRST = typer.Option(0.4, "--interim", help="When the first partial fires, and the floor between partials.")
-GROWTH = typer.Option(1.6, "--growth", help="Partial spacing growth [dim](1.0 = fixed spacing)[/].")
-MAXGAP = typer.Option(3.0, "--max-gap", help="Longest a partial may lag on a long utterance.")
-PARTIALS = typer.Option("reencode", "--partials",
-                        help="How provisional text is computed: [b]reencode[/b] "
-                             "(re-transcribe the prefix; heals, quadratic) or "
-                             "[b]stream[/b] (feed only new audio to a cached decoder; "
-                             "linear, appends). [dim]stream needs --backend mlx.[/]")
-CHUNKSEC = typer.Option(2.0, "--stream-chunk",
-                        help="Seconds of audio per streaming decode [dim](--partials stream)[/].")
-XDRAFT = typer.Option(False, "--x-partial-draft",
-                      help="[b]Experimental.[/] Decode each partial against the previous "
-                           "one as a speculative draft: same text, far fewer forward "
-                           "passes. [dim]mlx + --partials reencode only.[/]")
-REC = typer.Option(True, "--record/--no-record", help="Save per-utterance audio + manifest.")
+MINSPEECH = typer.Option(
+    MIN_SPEECH_SEC,
+    "--min-speech",
+    help="Voiced audio an utterance needs to count at all. "
+    '[dim]Lower for single words; a spoken "Claude" only '
+    "just clears the default.[/]",
+)
+FIRST = typer.Option(
+    0.4, "--interim", help="When the first partial fires, and the floor between partials."
+)
+GROWTH = typer.Option(
+    1.6, "--growth", help="Partial spacing growth [dim](1.0 = fixed spacing)[/]."
+)
+MAXGAP = typer.Option(
+    3.0, "--max-gap", help="Longest a partial may lag on a long utterance."
+)
+PARTIALS = typer.Option(
+    "reencode",
+    "--partials",
+    help="How provisional text is computed: [b]reencode[/b] "
+    "(re-transcribe the prefix; heals, quadratic) or "
+    "[b]stream[/b] (feed only new audio to a cached decoder; "
+    "linear, appends). [dim]stream needs --backend mlx.[/]",
+)
+CHUNKSEC = typer.Option(
+    2.0,
+    "--stream-chunk",
+    help="Seconds of audio per streaming decode [dim](--partials stream)[/].",
+)
+XDRAFT = typer.Option(
+    False,
+    "--x-partial-draft",
+    help="[b]Experimental.[/] Decode each partial against the previous "
+    "one as a speculative draft: same text, far fewer forward "
+    "passes. [dim]mlx + --partials reencode only.[/]",
+)
+REC = typer.Option(
+    True, "--record/--no-record", help="Save per-utterance audio + manifest."
+)
 RECDIR = typer.Option(paths.record_dir(), "--record-dir", help="Where recordings go.")
 
 
-def _config(*, out, language, device, mic, wav, threshold, first, growth, max_gap,
-            record, record_dir, backend, model, aligner, dtype, partials,
-            stream_chunk, min_speech=MIN_SPEECH_SEC, x_partial_draft=False) -> Config:
+def _config(
+    *,
+    out,
+    language,
+    device,
+    mic,
+    wav,
+    threshold,
+    first,
+    growth,
+    max_gap,
+    record,
+    record_dir,
+    backend,
+    model,
+    aligner,
+    dtype,
+    partials,
+    stream_chunk,
+    min_speech=MIN_SPEECH_SEC,
+    x_partial_draft=False,
+) -> Config:
     """Validate CLI values and build a Config.
 
     Keyword-only: seventeen positional arguments in the same order at two call sites is a
@@ -177,10 +233,22 @@ def _config(*, out, language, device, mic, wav, threshold, first, growth, max_ga
     # existed, so a stale `models/foo` sailed past it and died as a Hub 401.
     cadence = Cadence(first=first, growth=growth, max_gap=max_gap) if first > 0 else None
     return Config(
-        out_dir=out, language=language, device=device, backend=backend, model=model,
-        aligner=aligner, dtype=dtype, mic=mic, wav=wav, threshold=threshold,
-        cadence=cadence, record=record, record_dir=record_dir,
-        partials=partials, stream_chunk_sec=stream_chunk, min_speech=min_speech,
+        out_dir=out,
+        language=language,
+        device=device,
+        backend=backend,
+        model=model,
+        aligner=aligner,
+        dtype=dtype,
+        mic=mic,
+        wav=wav,
+        threshold=threshold,
+        cadence=cadence,
+        record=record,
+        record_dir=record_dir,
+        partials=partials,
+        stream_chunk_sec=stream_chunk,
+        min_speech=min_speech,
         x_partial_draft=x_partial_draft,
     )
 
@@ -191,10 +259,15 @@ def _load(cfg: Config, out: Console = console, on_status=None):
     on_status replaces the spinner rather than adding to it: a caller whose stderr carries
     a machine-readable stream can't also have a spinner redrawing over it.
     """
+
     def go(status):
         return load_backend(
-            cfg.backend, model=cfg.model, aligner=cfg.aligner,
-            device=cfg.device, dtype=cfg.dtype, on_status=status,
+            cfg.backend,
+            model=cfg.model,
+            aligner=cfg.aligner,
+            device=cfg.device,
+            dtype=cfg.dtype,
+            on_status=status,
             # No aligner load at all when nothing will ask for word timings.
             align=cfg.timestamps,
         )
@@ -231,7 +304,9 @@ def devices():
 
     for i, d in enumerate(sd.query_devices()):
         if d["max_input_channels"] > 0:
-            console.print(f"  [cyan]{i:>2}[/]  {d['name']}  [dim]({d['default_samplerate']:.0f}Hz)[/]")
+            console.print(
+                f"  [cyan]{i:>2}[/]  {d['name']}  [dim]({d['default_samplerate']:.0f}Hz)[/]"
+            )
 
 
 @app.command()
@@ -246,23 +321,35 @@ def backends():
     for name in BACKENDS:
         ok = available(name)
         mark = "[green]✓ installed[/]" if ok else "[yellow]not installed[/]"
-        console.print(f"  [cyan]{name:<6}[/] {mark}  "
-                      f"[dim]default dtype {BACKENDS[name].default_dtype}[/]")
+        console.print(
+            f"  [cyan]{name:<6}[/] {mark}  "
+            f"[dim]default dtype {BACKENDS[name].default_dtype}[/]"
+        )
 
 
 @app.command()
-def models(model_dir: Path = typer.Option(paths.models_dir(), "--dir",
-                                          help="Where local checkpoints live.")):
+def models(
+    model_dir: Path = typer.Option(
+        paths.models_dir(), "--dir", help="Where local checkpoints live."
+    ),
+):
     """List local checkpoints available to [b]--model[/b]."""
     console.print("[dim]upstream[/]")
     console.print(f"  [cyan]{DEFAULT_ASR}[/]  [dim]unquantised[/]")
     console.print(f"  [cyan]{DEFAULT_ALIGNER}[/]  [dim]aligner[/]")
-    found = local_checkpoints() if model_dir == paths.models_dir() else \
-        (sorted(p for p in model_dir.glob("*") if (p / "config.json").exists())
-         if model_dir.exists() else [])
+    found = (
+        local_checkpoints()
+        if model_dir == paths.models_dir()
+        else (
+            sorted(p for p in model_dir.glob("*") if (p / "config.json").exists())
+            if model_dir.exists()
+            else []
+        )
+    )
     if not found:
-        console.print(f"\n[dim]No local checkpoints in {model_dir}. "
-                      f"Build one with `lt quantize`.[/]")
+        console.print(
+            f"\n[dim]No local checkpoints in {model_dir}. Build one with `lt quantize`.[/]"
+        )
         return
     # Name the directory once rather than on every row: these paths are long, and a
     # wrapped list is harder to read than the thing it's listing.
@@ -274,12 +361,21 @@ def models(model_dir: Path = typer.Option(paths.models_dir(), "--dir",
 
 @app.command()
 def quantize(
-    model: str = typer.Argument(DEFAULT_ASR, help="Source weights: HF repo id or directory."),
+    model: str = typer.Argument(
+        DEFAULT_ASR, help="Source weights: HF repo id or directory."
+    ),
     bits: int = typer.Option(8, "--bits", help="Affine width: 2, 3, 4, 5, 6 or 8."),
-    group_size: int = typer.Option(64, "--group-size", help="Affine group size: 32, 64 or 128."),
-    mode: str = typer.Option("affine", "--mode",
-                             help="affine, mxfp4, mxfp8 or nvfp4 [dim](float modes fix bits and group size)[/]."),
-    out: Path | None = typer.Option(None, "--out", "-o", help="Destination [dim](default models/<name>-<tag>)[/]."),
+    group_size: int = typer.Option(
+        64, "--group-size", help="Affine group size: 32, 64 or 128."
+    ),
+    mode: str = typer.Option(
+        "affine",
+        "--mode",
+        help="affine, mxfp4, mxfp8 or nvfp4 [dim](float modes fix bits and group size)[/].",
+    ),
+    out: Path | None = typer.Option(
+        None, "--out", "-o", help="Destination [dim](default models/<name>-<tag>)[/]."
+    ),
 ):
     """Build a quantised MLX checkpoint, then run it with [b]--backend mlx -M <dir>[/b].
 
@@ -296,8 +392,14 @@ def quantize(
         raise typer.BadParameter(f"{mode!r} unknown. Choose from {', '.join(qz.MODES)}.")
     try:
         with console.status("[dim]quantising…[/]") as st:
-            dest = qz.quantize(model, bits=bits, group_size=group_size, mode=mode, out=out,
-                               on_status=lambda m: st.update(f"[dim]{m}…[/]"))
+            dest = qz.quantize(
+                model,
+                bits=bits,
+                group_size=group_size,
+                mode=mode,
+                out=out,
+                on_status=lambda m: st.update(f"[dim]{m}…[/]"),
+            )
     except (ValueError, OSError) as e:
         raise typer.BadParameter(str(e)) from e
     # The aligner is the same architecture with a classification head, so it quantises
@@ -312,15 +414,35 @@ def quantize(
 
 @app.command()
 def diarize(
-    audio_file: Path = typer.Argument(..., help="Audio to diarize (wav, flac, m4a, mp3, mp4)."),
-    out: Path | None = typer.Option(None, "--out", "-o", help="Write RTTM here [dim](default: stdout only)[/]."),
-    num_speakers: int | None = typer.Option(None, "--speakers", "-n", help="Exact speaker count, if known."),
+    audio_file: Path = typer.Argument(
+        ..., help="Audio to diarize (wav, flac, m4a, mp3, mp4)."
+    ),
+    out: Path | None = typer.Option(
+        None, "--out", "-o", help="Write RTTM here [dim](default: stdout only)[/]."
+    ),
+    num_speakers: int | None = typer.Option(
+        None, "--speakers", "-n", help="Exact speaker count, if known."
+    ),
     min_speakers: int = typer.Option(_DIA.min_speakers, "--min-speakers"),
     max_speakers: int = typer.Option(_DIA.max_speakers, "--max-speakers"),
-    threshold: float = typer.Option(_DIA.threshold, "--threshold", help="Cosine distance at which two voices are one person."),
-    hop: float = typer.Option(_DIA.hop_sec, "--hop", help="Seconds between analysis windows [dim](lower = finer, slower)[/]."),
-    compute_units: str = typer.Option(_DIA.compute_units, "--compute-units", help="ALL, CPU_AND_NE, CPU_AND_GPU or CPU_ONLY."),
-    words: Path | None = typer.Option(None, "--words", help="A words.json to label with speakers."),
+    threshold: float = typer.Option(
+        _DIA.threshold,
+        "--threshold",
+        help="Cosine distance at which two voices are one person.",
+    ),
+    hop: float = typer.Option(
+        _DIA.hop_sec,
+        "--hop",
+        help="Seconds between analysis windows [dim](lower = finer, slower)[/].",
+    ),
+    compute_units: str = typer.Option(
+        _DIA.compute_units,
+        "--compute-units",
+        help="ALL, CPU_AND_NE, CPU_AND_GPU or CPU_ONLY.",
+    ),
+    words: Path | None = typer.Option(
+        None, "--words", help="A words.json to label with speakers."
+    ),
 ):
     """Diarize a recording: who spoke when [dim](offline, whole file at once)[/].
 
@@ -336,16 +458,23 @@ def diarize(
     from .diarize.offline import OfflineDiarizer
 
     if compute_units not in COMPUTE_UNITS:
-        raise typer.BadParameter(f"{compute_units!r} unknown. Choose from {', '.join(COMPUTE_UNITS)}.")
-    cfg = OfflineConfig(hop_sec=hop, threshold=threshold, num_speakers=num_speakers,
-                        min_speakers=min_speakers, max_speakers=max_speakers,
-                        compute_units=compute_units)
+        raise typer.BadParameter(
+            f"{compute_units!r} unknown. Choose from {', '.join(COMPUTE_UNITS)}."
+        )
+    cfg = OfflineConfig(
+        hop_sec=hop,
+        threshold=threshold,
+        num_speakers=num_speakers,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+        compute_units=compute_units,
+    )
     try:
         with console.status("[dim]loading diarization models…[/]") as st:
             engine = OfflineDiarizer(cfg, on_status=lambda m: st.update(f"[dim]{m}…[/]"))
         signal = load_audio(audio_file)
         dur = len(signal) / SAMPLE_RATE
-        with console.status(f"[dim]diarizing {dur/60:.1f} min…[/]"):
+        with console.status(f"[dim]diarizing {dur / 60:.1f} min…[/]"):
             t0 = time.monotonic()
             turns = engine.diarize(signal, SAMPLE_RATE)
             took = time.monotonic() - t0
@@ -355,14 +484,18 @@ def diarize(
     speakers = sorted({t.speaker for t in turns})
     console.print(
         f"[green]{len(speakers)}[/] speakers, [green]{len(turns)}[/] turns "
-        f"[dim]({dur/60:.1f} min in {took:.1f}s · {dur/took:.0f}x realtime)[/]"
+        f"[dim]({dur / 60:.1f} min in {took:.1f}s · {dur / took:.0f}x realtime)[/]"
     )
     for spk in speakers:
         held = sum(t.duration for t in turns if t.speaker == spk)
-        console.print(f"  [cyan]speaker {spk}[/]  {held/60:5.2f} min  [dim]{held/dur*100:4.1f}%[/]")
+        console.print(
+            f"  [cyan]speaker {spk}[/]  {held / 60:5.2f} min  [dim]{held / dur * 100:4.1f}%[/]"
+        )
     for t in turns:
-        console.print(f"  [dim]{fmt_clock(t.start)}-{fmt_clock(t.end)}[/]  speaker {t.speaker}",
-                      highlight=False)
+        console.print(
+            f"  [dim]{fmt_clock(t.start)}-{fmt_clock(t.end)}[/]  speaker {t.speaker}",
+            highlight=False,
+        )
 
     if out:
         from .formats import rttm
@@ -377,8 +510,10 @@ def diarize(
         labelled = label_words(json.loads(words.read_text()), turns)
         dest = words.with_suffix(".speakers.json")
         dest.write_text(json.dumps(labelled, indent=2))
-        console.print(f"[dim]→ {dest}  ({sum(w['speaker'] is not None for w in labelled)}"
-                      f"/{len(labelled)} words labelled)[/]")
+        console.print(
+            f"[dim]→ {dest}  ({sum(w['speaker'] is not None for w in labelled)}"
+            f"/{len(labelled)} words labelled)[/]"
+        )
 
 
 @app.command("paths")
@@ -405,8 +540,9 @@ def paths_():
 def config_(
     ctx: typer.Context,
     init: bool = typer.Option(False, "--init", help="Write a starter config file."),
-    edit: bool = typer.Option(False, "--edit",
-                              help="Open it in [b]$EDITOR[/b], creating it if needed."),
+    edit: bool = typer.Option(
+        False, "--edit", help="Open it in [b]$EDITOR[/b], creating it if needed."
+    ),
 ):
     """Show the config file and what it sets [dim](--init to start one)[/].
 
@@ -438,8 +574,10 @@ def config_(
         click.edit(filename=str(path))
 
     if not path.is_file():
-        console.print(f"[dim]{path}[/]\n[yellow]no config file[/] "
-                      f"[dim]— `lt config --init` starts one[/]")
+        console.print(
+            f"[dim]{path}[/]\n[yellow]no config file[/] "
+            f"[dim]— `lt config --init` starts one[/]"
+        )
         raise typer.Exit(0 if init else 1)
 
     console.print(f"[green]✓[/] {path}", highlight=False)
@@ -478,13 +616,22 @@ def _shown(prm, value) -> str:
 
 @app.command()
 def tune(
-    wav: Path | None = typer.Option(None, "--wav",
-        help="Measure against a recording instead of the microphone."),
-    write: bool = typer.Option(False, "--write", "-w",
-        help="Write the tuned config [dim](keeps the old one as config.toml.bak)[/]."),
+    wav: Path | None = typer.Option(
+        None, "--wav", help="Measure against a recording instead of the microphone."
+    ),
+    write: bool = typer.Option(
+        False,
+        "--write",
+        "-w",
+        help="Write the tuned config [dim](keeps the old one as config.toml.bak)[/].",
+    ),
     phrases: int = typer.Option(3, "--phrases", help="How many utterances to record."),
-    mic: int | None = MIC, backend: str = BACKEND, model: str = MODEL,
-    aligner: str = ALIGNER, dtype: str = DTYPE, language: str = LANG,
+    mic: int | None = MIC,
+    backend: str = BACKEND,
+    model: str = MODEL,
+    aligner: str = ALIGNER,
+    dtype: str = DTYPE,
+    language: str = LANG,
 ):
     """Measure this machine and this voice, then pick settings from the numbers.
 
@@ -497,10 +644,23 @@ def tune(
     from . import tune as tn
 
     cfg = _config(
-        out=paths.out_dir(), language=language, device=DEVICE.default, mic=mic, wav=None,
-        threshold=None, first=0.0, growth=1.6, max_gap=3.0, record=False,
-        record_dir=paths.record_dir(), backend=backend, model=model, aligner=aligner,
-        dtype=dtype, partials="reencode", stream_chunk=2.0,
+        out=paths.out_dir(),
+        language=language,
+        device=DEVICE.default,
+        mic=mic,
+        wav=None,
+        threshold=None,
+        first=0.0,
+        growth=1.6,
+        max_gap=3.0,
+        record=False,
+        record_dir=paths.record_dir(),
+        backend=backend,
+        model=model,
+        aligner=aligner,
+        dtype=dtype,
+        partials="reencode",
+        stream_chunk=2.0,
     )
     cfg.timestamps = False
 
@@ -508,16 +668,22 @@ def tune(
     console.print(f"[b]machine[/]  {box.chip}", highlight=False)
     console.print(f"         {box.cores} cores · {box.memory_gb:g} GB · {box.platform}")
     if box.apple_silicon and backend != "mlx":
-        console.print("[yellow]         apple silicon: --backend mlx is 2.2x torch "
-                      "on a quantised checkpoint[/]")
+        console.print(
+            "[yellow]         apple silicon: --backend mlx is 2.2x torch "
+            "on a quantised checkpoint[/]"
+        )
 
     found = local_checkpoints()
     quant = describe_checkpoint(cfg.model)
-    console.print(f"\n[b]checkpoints[/]  {len(found)} local · using "
-                  f"[cyan]{Path(cfg.model).name}[/] [dim]{quant or 'unquantised'}[/]")
+    console.print(
+        f"\n[b]checkpoints[/]  {len(found)} local · using "
+        f"[cyan]{Path(cfg.model).name}[/] [dim]{quant or 'unquantised'}[/]"
+    )
     if not found:
-        console.print("[dim]         none built. `lt quantize` is the single biggest "
-                      "lever on this machine.[/]")
+        console.print(
+            "[dim]         none built. `lt quantize` is the single biggest "
+            "lever on this machine.[/]"
+        )
 
     # ---------------------------------------------------------------- listen
     samples: list[tn.Sample] = []
@@ -533,12 +699,16 @@ def tune(
         src = make_source(None, wav).open()
         threshold = src.calibrate(1.0)
         stop = threading.Event()
-        samples = [tn.Sample("", c.audio, tn.count_voiced(c.audio, threshold))
-                   for c in segment_utterances(src.frames(stop), threshold, min_speech=0.0)
-                   if c.final]
+        samples = [
+            tn.Sample("", c.audio, tn.count_voiced(c.audio, threshold))
+            for c in segment_utterances(src.frames(stop), threshold, min_speech=0.0)
+            if c.final
+        ]
         src.close()
-        console.print(f"\n[b]audio[/]  {wav.name} · {len(audio)/16000:.1f}s · "
-                      f"{len(samples)} utterances · threshold {threshold:.5f}")
+        console.print(
+            f"\n[b]audio[/]  {wav.name} · {len(audio) / 16000:.1f}s · "
+            f"{len(samples)} utterances · threshold {threshold:.5f}"
+        )
     else:
         from .sources import make_source
 
@@ -547,17 +717,21 @@ def tune(
             with console.status("[dim]measuring the room, stay quiet…[/]"):
                 threshold = source.calibrate(1.0)
             console.print(f"\n[b]room[/]  VAD threshold {threshold:.5f}")
-            console.print("[dim]Say a few things — one short word, then a sentence or "
-                          "two. Pause between them.[/]")
+            console.print(
+                "[dim]Say a few things — one short word, then a sentence or "
+                "two. Pause between them.[/]"
+            )
             for i in range(phrases):
-                console.print(f"  [cyan]{i+1}/{phrases}[/] listening…", end="\r")
+                console.print(f"  [cyan]{i + 1}/{phrases}[/] listening…", end="\r")
                 got = tn.capture(source, threshold)
                 if got is None:
-                    console.print(f"  [yellow]{i+1}/{phrases} nothing heard[/]      ")
+                    console.print(f"  [yellow]{i + 1}/{phrases} nothing heard[/]      ")
                     continue
                 samples.append(got)
-                console.print(f"  [green]{i+1}/{phrases}[/] {got.seconds:.2f}s · "
-                              f"{got.voiced_sec:.2f}s voiced          ")
+                console.print(
+                    f"  [green]{i + 1}/{phrases}[/] {got.seconds:.2f}s · "
+                    f"{got.voiced_sec:.2f}s voiced          "
+                )
         finally:
             source.close()
 
@@ -566,16 +740,20 @@ def tune(
 
     shortest = min(samples, key=lambda s: s.voiced_sec)
     min_speech = tn.suggest_min_speech(samples)
-    console.print(f"\n[b]gate[/]  shortest phrase carried [b]{shortest.voiced_sec:.2f}s[/] "
-                  f"of voiced audio")
-    console.print(f"        --min-speech [green]{min_speech:g}[/]  "
-                  f"[dim](default {MIN_SPEECH_SEC:g} would "
-                  f"{'have dropped it' if shortest.voiced_sec < MIN_SPEECH_SEC else 'keep it'})[/]")
+    console.print(
+        f"\n[b]gate[/]  shortest phrase carried [b]{shortest.voiced_sec:.2f}s[/] "
+        f"of voiced audio"
+    )
+    console.print(
+        f"        --min-speech [green]{min_speech:g}[/]  "
+        f"[dim](default {MIN_SPEECH_SEC:g} would "
+        f"{'have dropped it' if shortest.voiced_sec < MIN_SPEECH_SEC else 'keep it'})[/]"
+    )
 
     # ---------------------------------------------------------------- measure
     t0 = time.monotonic()
     backend_obj = _load(cfg)
-    console.print(f"\n[b]load[/]  {time.monotonic()-t0:.1f}s")
+    console.print(f"\n[b]load[/]  {time.monotonic() - t0:.1f}s")
 
     longest = max(samples, key=lambda s: s.seconds)
     lengths = tn.bench_lengths(longest.seconds)
@@ -594,37 +772,53 @@ def tune(
                 draft_pts.append((at, time.monotonic() - t))
     full = tn.fit(full_pts)
     drafted = tn.fit(draft_pts) if draft_pts else full
-    console.print(f"[b]partial[/]  {full.fixed*1000:.0f}ms + "
-                  f"{full.per_sec*1000:.0f}ms per second of prefix", highlight=False)
+    console.print(
+        f"[b]partial[/]  {full.fixed * 1000:.0f}ms + "
+        f"{full.per_sec * 1000:.0f}ms per second of prefix",
+        highlight=False,
+    )
     if draft_pts:
-        console.print(f"[b]drafted[/]  {drafted.fixed*1000:.0f}ms + "
-                      f"{drafted.per_sec*1000:.0f}ms  [dim]--x-partial-draft[/]",
-                      highlight=False)
+        console.print(
+            f"[b]drafted[/]  {drafted.fixed * 1000:.0f}ms + "
+            f"{drafted.per_sec * 1000:.0f}ms  [dim]--x-partial-draft[/]",
+            highlight=False,
+        )
 
     # ---------------------------------------------------------------- choose
     REF = 20.0
     verdicts = [tn.evaluate(p, drafted, full, REF) for p in tn.PROFILES]
     best = tn.recommend(verdicts)
-    console.print(f"\n[b]profiles[/] [dim]on a {REF:g}s utterance — staleness is how far "
-                  f"behind you the text on screen gets[/]\n")
+    console.print(
+        f"\n[b]profiles[/] [dim]on a {REF:g}s utterance — staleness is how far "
+        f"behind you the text on screen gets[/]\n"
+    )
     console.print(f"  {'':<12}{'partials':>9}{'load':>8}{'stale avg':>11}{'stale max':>11}")
     for v in verdicts:
         mark = "[green]→[/]" if v is best else " "
         warn = "" if v.load <= tn.SUSTAINABLE else "  [red]can't keep up[/]"
         if not warn and not v.safe_without_drafting:
             warn = "  [yellow]needs drafting[/]"
-        console.print(f"{mark} [cyan]{v.profile.name:<11}[/]{v.partials:>8}"
-                      f"{v.load:>8.2f}x{v.stale_avg:>10.2f}s{v.stale_max:>10.2f}s{warn}",
-                      highlight=False)
+        console.print(
+            f"{mark} [cyan]{v.profile.name:<11}[/]{v.partials:>8}"
+            f"{v.load:>8.2f}x{v.stale_avg:>10.2f}s{v.stale_max:>10.2f}s{warn}",
+            highlight=False,
+        )
     console.print(f"\n[green]{best.profile.name}[/] — {best.profile.blurb}")
     if draft_pts and best.speedup > 1.05:
-        console.print(f"[dim]drafting makes it {best.speedup:.1f}x cheaper here "
-                      f"({best.load_full:.2f}x without it).[/]")
+        console.print(
+            f"[dim]drafting makes it {best.speedup:.1f}x cheaper here "
+            f"({best.load_full:.2f}x without it).[/]"
+        )
 
-    text = tn.render(backend=cfg.backend, model=model, aligner=aligner,
-                     min_speech=min_speech, profile=best.profile,
-                     drafting=bool(draft_pts),
-                     note=f"{box.chip} · measured {time.strftime('%Y-%m-%d')}")
+    text = tn.render(
+        backend=cfg.backend,
+        model=model,
+        aligner=aligner,
+        min_speech=min_speech,
+        profile=best.profile,
+        drafting=bool(draft_pts),
+        note=f"{box.chip} · measured {time.strftime('%Y-%m-%d')}",
+    )
     dest = paths.config_file()
     if not write:
         console.print(f"\n[dim]--write saves this to {dest}[/]\n")
@@ -655,7 +849,9 @@ def cadence(
     points = c.schedule(length)
     total = sum(points) + length  # partials plus the final pass
     console.print(f"partials at: [cyan]{', '.join(f'{p:g}s' for p in points)}[/]")
-    console.print(f"count: [b]{len(points)}[/]   first text after [b]{points[0] if points else length:g}s[/]")
+    console.print(
+        f"count: [b]{len(points)}[/]   first text after [b]{points[0] if points else length:g}s[/]"
+    )
     console.print(
         f"audio processed: [b]{total:.1f}s[/] for a {length:g}s utterance"
         f"  [dim](x{total / length:.1f} realtime)[/]"
@@ -664,22 +860,48 @@ def cadence(
 
 @app.command()
 def tui(
-    out: Path = OUT, language: str = LANG, device: str = DEVICE, mic: int | None = MIC,
-    wav: Path | None = WAV, threshold: float | None = THRESH, first: float = FIRST,
-    growth: float = GROWTH, max_gap: float = MAXGAP, record: bool = REC,
-    record_dir: Path = RECDIR, backend: str = BACKEND, model: str = MODEL,
-    aligner: str = ALIGNER, dtype: str = DTYPE, partials: str = PARTIALS,
-    stream_chunk: float = CHUNKSEC, min_speech: float = MINSPEECH,
+    out: Path = OUT,
+    language: str = LANG,
+    device: str = DEVICE,
+    mic: int | None = MIC,
+    wav: Path | None = WAV,
+    threshold: float | None = THRESH,
+    first: float = FIRST,
+    growth: float = GROWTH,
+    max_gap: float = MAXGAP,
+    record: bool = REC,
+    record_dir: Path = RECDIR,
+    backend: str = BACKEND,
+    model: str = MODEL,
+    aligner: str = ALIGNER,
+    dtype: str = DTYPE,
+    partials: str = PARTIALS,
+    stream_chunk: float = CHUNKSEC,
+    min_speech: float = MINSPEECH,
     x_partial_draft: bool = XDRAFT,
 ):
     """Full-screen live view [dim](q quit · p pause · c clear)[/]."""
     from .tui import build_tui
 
     cfg = _config(
-        out=out, language=language, device=device, mic=mic, wav=wav, threshold=threshold,
-        first=first, growth=growth, max_gap=max_gap, record=record, record_dir=record_dir,
-        backend=backend, model=model, aligner=aligner, dtype=dtype, partials=partials,
-        stream_chunk=stream_chunk, min_speech=min_speech,
+        out=out,
+        language=language,
+        device=device,
+        mic=mic,
+        wav=wav,
+        threshold=threshold,
+        first=first,
+        growth=growth,
+        max_gap=max_gap,
+        record=record,
+        record_dir=record_dir,
+        backend=backend,
+        model=model,
+        aligner=aligner,
+        dtype=dtype,
+        partials=partials,
+        stream_chunk=stream_chunk,
+        min_speech=min_speech,
         x_partial_draft=x_partial_draft,
     )
     # Load before entering full-screen: subprocess spawning breaks under Textual's stdout.
@@ -694,12 +916,24 @@ def tui(
 
 @app.command()
 def cli(
-    out: Path = OUT, language: str = LANG, device: str = DEVICE, mic: int | None = MIC,
-    wav: Path | None = WAV, threshold: float | None = THRESH, first: float = FIRST,
-    growth: float = GROWTH, max_gap: float = MAXGAP, record: bool = REC,
-    record_dir: Path = RECDIR, backend: str = BACKEND, model: str = MODEL,
-    aligner: str = ALIGNER, dtype: str = DTYPE, partials: str = PARTIALS,
-    stream_chunk: float = CHUNKSEC, min_speech: float = MINSPEECH,
+    out: Path = OUT,
+    language: str = LANG,
+    device: str = DEVICE,
+    mic: int | None = MIC,
+    wav: Path | None = WAV,
+    threshold: float | None = THRESH,
+    first: float = FIRST,
+    growth: float = GROWTH,
+    max_gap: float = MAXGAP,
+    record: bool = REC,
+    record_dir: Path = RECDIR,
+    backend: str = BACKEND,
+    model: str = MODEL,
+    aligner: str = ALIGNER,
+    dtype: str = DTYPE,
+    partials: str = PARTIALS,
+    stream_chunk: float = CHUNKSEC,
+    min_speech: float = MINSPEECH,
     x_partial_draft: bool = XDRAFT,
 ):
     """Stream transcriptions to stdout [dim](Ctrl-C to stop)[/]."""
@@ -707,10 +941,24 @@ def cli(
     from rich.text import Text
 
     cfg = _config(
-        out=out, language=language, device=device, mic=mic, wav=wav, threshold=threshold,
-        first=first, growth=growth, max_gap=max_gap, record=record, record_dir=record_dir,
-        backend=backend, model=model, aligner=aligner, dtype=dtype, partials=partials,
-        stream_chunk=stream_chunk, min_speech=min_speech,
+        out=out,
+        language=language,
+        device=device,
+        mic=mic,
+        wav=wav,
+        threshold=threshold,
+        first=first,
+        growth=growth,
+        max_gap=max_gap,
+        record=record,
+        record_dir=record_dir,
+        backend=backend,
+        model=model,
+        aligner=aligner,
+        dtype=dtype,
+        partials=partials,
+        stream_chunk=stream_chunk,
+        min_speech=min_speech,
         x_partial_draft=x_partial_draft,
     )
 
@@ -756,28 +1004,42 @@ def cli(
     # things driving the cursor at once garbles both.
     backend_obj = _load(cfg)
 
-    with (live if show_interim else contextlib.nullcontext()):
+    with live if show_interim else contextlib.nullcontext():
         result = run_session(cfg, Hooks(), backend=backend_obj)
     _report(cfg, *result)
 
 
 # ------------------------------------------------------------------ dictate
 
-WAIT = typer.Option(8.0, "--wait",
-                    help="Give up if speech hasn't started within this many seconds "
-                         "[dim](0 = wait forever)[/].")
-EVENTS = typer.Option(False, "--events",
-                      help="Emit JSON lines on stderr: levels, state, text.")
-RECAL = typer.Option(False, "--recalibrate",
-                     help="Re-measure the room instead of reusing the cached threshold.")
-DICT_REC = typer.Option(False, "--record/--no-record",
-                        help="Save the utterance's audio + manifest.")
-DICT_FIRST = typer.Option(0.0, "--interim",
-                          help="Emit provisional text this many seconds in "
-                               "[dim](0 = off; only useful with --events)[/].")
-HOLD = typer.Option(False, "--hold",
-                    help="Keep listening through pauses until signalled, instead of "
-                         "stopping at the first one. [dim]For hold-to-talk.[/]")
+WAIT = typer.Option(
+    8.0,
+    "--wait",
+    help="Give up if speech hasn't started within this many seconds "
+    "[dim](0 = wait forever)[/].",
+)
+EVENTS = typer.Option(
+    False, "--events", help="Emit JSON lines on stderr: levels, state, text."
+)
+RECAL = typer.Option(
+    False,
+    "--recalibrate",
+    help="Re-measure the room instead of reusing the cached threshold.",
+)
+DICT_REC = typer.Option(
+    False, "--record/--no-record", help="Save the utterance's audio + manifest."
+)
+DICT_FIRST = typer.Option(
+    0.0,
+    "--interim",
+    help="Emit provisional text this many seconds in "
+    "[dim](0 = off; only useful with --events)[/].",
+)
+HOLD = typer.Option(
+    False,
+    "--hold",
+    help="Keep listening through pauses until signalled, instead of "
+    "stopping at the first one. [dim]For hold-to-talk.[/]",
+)
 
 
 class _Events:
@@ -800,12 +1062,23 @@ class _Events:
 
 @app.command()
 def dictate(
-    language: str = LANG, mic: int | None = MIC, wav: Path | None = WAV,
-    threshold: float | None = THRESH, recalibrate: bool = RECAL, wait: float = WAIT,
-    events: bool = EVENTS, interim: float = DICT_FIRST, hold: bool = HOLD,
-    record: bool = DICT_REC, record_dir: Path = RECDIR, backend: str = BACKEND,
-    model: str = MODEL, dtype: str = DTYPE, device: str = DEVICE,
-    min_speech: float = MINSPEECH, x_partial_draft: bool = XDRAFT,
+    language: str = LANG,
+    mic: int | None = MIC,
+    wav: Path | None = WAV,
+    threshold: float | None = THRESH,
+    recalibrate: bool = RECAL,
+    wait: float = WAIT,
+    events: bool = EVENTS,
+    interim: float = DICT_FIRST,
+    hold: bool = HOLD,
+    record: bool = DICT_REC,
+    record_dir: Path = RECDIR,
+    backend: str = BACKEND,
+    model: str = MODEL,
+    dtype: str = DTYPE,
+    device: str = DEVICE,
+    min_speech: float = MINSPEECH,
+    x_partial_draft: bool = XDRAFT,
 ):
     """Speech to stdout, then exit. [dim]A surface to compose on.[/]
 
@@ -837,11 +1110,25 @@ def dictate(
     emit = _Events(events)
 
     cfg = _config(
-        out=paths.out_dir(), language=language, device=device, mic=mic, wav=wav,
-        threshold=threshold, first=interim, growth=1.6, max_gap=3.0,
-        record=record, record_dir=record_dir, backend=backend, model=model,
-        aligner=DEFAULT_ALIGNER, dtype=dtype, partials="reencode", stream_chunk=2.0,
-        min_speech=min_speech, x_partial_draft=x_partial_draft,
+        out=paths.out_dir(),
+        language=language,
+        device=device,
+        mic=mic,
+        wav=wav,
+        threshold=threshold,
+        first=interim,
+        growth=1.6,
+        max_gap=3.0,
+        record=record,
+        record_dir=record_dir,
+        backend=backend,
+        model=model,
+        aligner=DEFAULT_ALIGNER,
+        dtype=dtype,
+        partials="reencode",
+        stream_chunk=2.0,
+        min_speech=min_speech,
+        x_partial_draft=x_partial_draft,
     )
     # Dictation wants a string, not a transcript. This is what skips loading the 0.6B
     # aligner as well as running it -- see load_backend(align=...).
@@ -859,8 +1146,9 @@ def dictate(
 
     t0 = time.monotonic()
     emit("loading", model=cfg.model, backend=cfg.backend)
-    backend_obj = _load(cfg, err, on_status=(lambda m: emit("loading", detail=m))
-                        if events else None)
+    backend_obj = _load(
+        cfg, err, on_status=(lambda m: emit("loading", detail=m)) if events else None
+    )
     load_took = time.monotonic() - t0
 
     class Hooks:
@@ -877,11 +1165,17 @@ def dictate(
             if measuring and wav is None:
                 remember_threshold(mic, threshold)
             self.deadline = time.monotonic() + wait if wait > 0 else None
-            emit("ready", threshold=round(threshold, 6), calibrated=measuring,
-                 load=round(load_took, 3))
+            emit(
+                "ready",
+                threshold=round(threshold, 6),
+                calibrated=measuring,
+                load=round(load_took, 3),
+            )
             if not events:
-                err.print(f"[b]Speak.[/] [dim](threshold {threshold:.5f}, "
-                          f"loaded in {load_took:.1f}s)[/]")
+                err.print(
+                    f"[b]Speak.[/] [dim](threshold {threshold:.5f}, "
+                    f"loaded in {load_took:.1f}s)[/]"
+                )
 
         def bind_stop(self, stop):
             self.stop = stop
@@ -904,8 +1198,12 @@ def dictate(
 
         def segment(self, seg):
             self.parts.append(seg.text)
-            emit("final", text=seg.text, took=round(seg.took, 3),
-                 audio=round(seg.audio_sec, 3))
+            emit(
+                "final",
+                text=seg.text,
+                took=round(seg.took, 3),
+                audio=round(seg.audio_sec, 3),
+            )
             if not events:
                 err.print(f"[dim]{seg.took:.2f}s for {seg.audio_sec:.1f}s of audio[/]")
             # Under --hold the pause is just a pause: whoever is holding the key decides

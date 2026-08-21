@@ -82,9 +82,14 @@ class Cadence:
         return out
 
 
-def segment_utterances(frame_iter, threshold: float, on_level=None,
-                       cadence: Cadence | None = None, incremental: bool = False,
-                       min_speech: float = MIN_SPEECH_SEC):
+def segment_utterances(
+    frame_iter,
+    threshold: float,
+    on_level=None,
+    cadence: Cadence | None = None,
+    incremental: bool = False,
+    min_speech: float = MIN_SPEECH_SEC,
+):
     """Cut a stream of fixed-size frames into utterances.
 
     Yields Chunks. on_level(rms, in_speech) is called per frame so a UI can draw a meter
@@ -170,8 +175,9 @@ def segment_utterances(frame_iter, threshold: float, on_level=None,
                 fresh = utterance[sent:]
                 sent = len(utterance)
                 if fresh:
-                    yield Chunk(np.concatenate(fresh), utt_start, final=False,
-                                incremental=True)
+                    yield Chunk(
+                        np.concatenate(fresh), utt_start, final=False, incremental=True
+                    )
             else:
                 yield Chunk(np.concatenate(utterance), utt_start, final=False)
 

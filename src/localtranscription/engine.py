@@ -22,10 +22,35 @@ from .sources import make_source
 from .vad import MIN_SPEECH_SEC, SAMPLE_RATE, Cadence, Chunk, segment_utterances
 
 LANGUAGES = [
-    "Chinese", "English", "Cantonese", "Arabic", "German", "French", "Spanish",
-    "Portuguese", "Indonesian", "Italian", "Korean", "Russian", "Thai", "Vietnamese",
-    "Japanese", "Turkish", "Hindi", "Malay", "Dutch", "Swedish", "Danish", "Finnish",
-    "Polish", "Czech", "Filipino", "Persian", "Greek", "Romanian", "Hungarian",
+    "Chinese",
+    "English",
+    "Cantonese",
+    "Arabic",
+    "German",
+    "French",
+    "Spanish",
+    "Portuguese",
+    "Indonesian",
+    "Italian",
+    "Korean",
+    "Russian",
+    "Thai",
+    "Vietnamese",
+    "Japanese",
+    "Turkish",
+    "Hindi",
+    "Malay",
+    "Dutch",
+    "Swedish",
+    "Danish",
+    "Finnish",
+    "Polish",
+    "Czech",
+    "Filipino",
+    "Persian",
+    "Greek",
+    "Romanian",
+    "Hungarian",
     "Macedonian",
 ]
 
@@ -108,9 +133,18 @@ class Transcriber:
     _handle attribute), so any underscore name here risks silently shadowing one.
     """
 
-    def __init__(self, backend: Backend, language, on_segment=None, on_error=None,
-                 on_interim=None, recorder: SessionRecorder | None = None,
-                 stream=None, timestamps: bool = True, draft=None):
+    def __init__(
+        self,
+        backend: Backend,
+        language,
+        on_segment=None,
+        on_error=None,
+        on_interim=None,
+        recorder: SessionRecorder | None = None,
+        stream=None,
+        timestamps: bool = True,
+        draft=None,
+    ):
         self.timestamps = timestamps
         # Drafted partial decoder, or None. Finals never use it: they run the aligner and
         # are the artifact that gets saved, so they stay on the library's own path.
@@ -164,7 +198,9 @@ class Transcriber:
 
         self.work.put(_STOP)
         if self.thread.ident is None:
-            return True  # never started; joining it would raise, and this is a teardown path
+            return (
+                True  # never started; joining it would raise, and this is a teardown path
+            )
         self.thread.join(timeout)
         # Daemon thread: if inference is wedged, it dies with the process rather than
         # holding up exit.
@@ -203,14 +239,19 @@ class Transcriber:
 
     def _feed_stream(self, chunk: Chunk) -> Segment | None:
         assert self.stream is not None  # only reached for incremental chunks, which
-        t0 = time.monotonic()           # only exist when a stream was opened
+        t0 = time.monotonic()  # only exist when a stream was opened
         if self._stream_at != chunk.start:
             self._reset_stream(chunk.start)
         text = self.stream.feed(chunk.audio).strip()
         if not text:
             return None
-        return Segment(chunk.start, text, len(chunk.audio) / SAMPLE_RATE,
-                       time.monotonic() - t0, stable=self.stream.stable)
+        return Segment(
+            chunk.start,
+            text,
+            len(chunk.audio) / SAMPLE_RATE,
+            time.monotonic() - t0,
+            stable=self.stream.stable,
+        )
 
     def _transcribe_one(self, chunk: Chunk):
         if chunk.incremental and self.stream is not None:
@@ -235,8 +276,9 @@ class Transcriber:
             text = self.draft.transcribe(chunk.audio, utterance=chunk.start).strip()
             if not text:
                 return
-            seg = Segment(chunk.start, text, len(chunk.audio) / SAMPLE_RATE,
-                          time.monotonic() - t0)
+            seg = Segment(
+                chunk.start, text, len(chunk.audio) / SAMPLE_RATE, time.monotonic() - t0
+            )
             if self.recorder:
                 self.recorder.note_interim(chunk.start, seg.audio_sec, seg.text, seg.took)
             if self.on_interim:
@@ -279,8 +321,6 @@ class Transcriber:
             self.on_segment(Segment(chunk.start, text, audio_sec, took))
         if self.recorder:
             self.recorder.add(chunk.audio, chunk.start, text, words, self.language, took)
-
-
 
 
 def run_session(cfg: Config, hooks, backend=None, stop: threading.Event | None = None):
@@ -353,8 +393,12 @@ def run_session(cfg: Config, hooks, backend=None, stop: threading.Event | None =
         if not stop.is_set():
             hooks.ready(threshold)
             for chunk in segment_utterances(
-                source.frames(stop), threshold, on_level=hooks.level, cadence=cfg.cadence,
-                incremental=stream is not None, min_speech=cfg.min_speech,
+                source.frames(stop),
+                threshold,
+                on_level=hooks.level,
+                cadence=cfg.cadence,
+                incremental=stream is not None,
+                min_speech=cfg.min_speech,
             ):
                 worker.submit(chunk)
     finally:

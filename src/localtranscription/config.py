@@ -45,7 +45,7 @@ from . import paths
 #: See the module docstring for why this isn't "all of them".
 SESSION = ("tui", "cli", "dictate", "tune")
 
-TEMPLATE = '''\
+TEMPLATE = """\
 # localtranscription -- defaults for the flags you'd otherwise type every time.
 # A flag on the command line still beats anything in here.
 #
@@ -72,7 +72,7 @@ TEMPLATE = '''\
 # [diarize]
 # threshold = 0.65                  # cosine distance -- NOT the VAD threshold above
 # max_speakers = 8
-'''
+"""
 
 
 class ConfigError(Exception):
@@ -130,8 +130,9 @@ def _value(value: Any) -> Any:
     return value
 
 
-def default_map(data: Mapping[str, Any],
-                params: Mapping[str, Mapping[str, str]]) -> dict[str, dict[str, Any]]:
+def default_map(
+    data: Mapping[str, Any], params: Mapping[str, Mapping[str, str]]
+) -> dict[str, dict[str, Any]]:
     """Layer a parsed config into Click's per-command default map.
 
     `params` is {command: {written form: parameter name}}, read off the built CLI -- so

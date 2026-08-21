@@ -103,14 +103,19 @@ def test_merge_keeps_different_speakers_apart():
 
 def test_merge_drops_slivers_but_only_after_merging():
     # Two 0.2s fragments of one speaker are a 0.45s turn, not two things to discard.
-    merged = merge_turns([Turn(0, 0.2, 0), Turn(0.25, 0.45, 0)], max_gap=0.5, min_duration=0.25)
+    merged = merge_turns(
+        [Turn(0, 0.2, 0), Turn(0.25, 0.45, 0)], max_gap=0.5, min_duration=0.25
+    )
     assert merged == [Turn(0, 0.45, 0)]
     assert merge_turns([Turn(0, 0.1, 0)], min_duration=0.25) == []
 
 
 def test_label_words_picks_the_turn_with_most_overlap():
     turns = [Turn(0, 1, 0), Turn(1, 2, 1)]
-    words = [{"text": "a", "start": 0.0, "end": 0.9}, {"text": "b", "start": 1.1, "end": 1.9}]
+    words = [
+        {"text": "a", "start": 0.0, "end": 0.9},
+        {"text": "b", "start": 1.1, "end": 1.9},
+    ]
     assert [w["speaker"] for w in label_words(words, turns)] == [0, 1]
 
 
@@ -208,7 +213,7 @@ def test_unreliable_embeddings_are_assigned_but_do_not_define_clusters():
     rng = np.random.default_rng(4)
     x = _two_blobs(rng)
     reliable = np.zeros(len(x), bool)
-    reliable[:10] = True   # only speaker A is trusted
+    reliable[:10] = True  # only speaker A is trusted
     reliable[30:40] = True  # and only speaker B
     labels = cluster_embeddings(x, reliable, OfflineConfig())
     assert len(labels) == len(x)

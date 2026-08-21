@@ -24,7 +24,9 @@ def fmt_clock(t: float) -> str:
 def words_to_srt(items, max_words_per_cue=12, max_gap=0.8):
     cues, cur = [], []
     for it in items:
-        if cur and (it["start"] - cur[-1]["end"] > max_gap or len(cur) >= max_words_per_cue):
+        if cur and (
+            it["start"] - cur[-1]["end"] > max_gap or len(cur) >= max_words_per_cue
+        ):
             cues.append(cur)
             cur = []
         cur.append(it)
@@ -77,7 +79,9 @@ def write_outputs(out_dir: Path, segments, words, stem=None) -> Path | None:
     (out_dir / f"{stem}.txt").write_text(
         "\n".join(text for _, text in segments) + "\n", encoding="utf-8"
     )
-    (out_dir / f"{stem}.words.json").write_text(json.dumps(words, indent=2), encoding="utf-8")
+    (out_dir / f"{stem}.words.json").write_text(
+        json.dumps(words, indent=2), encoding="utf-8"
+    )
     if words:
         (out_dir / f"{stem}.srt").write_text(words_to_srt(words), encoding="utf-8")
         (out_dir / f"{stem}.timestamped.md").write_text(

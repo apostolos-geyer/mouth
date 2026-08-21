@@ -21,9 +21,15 @@ from . import paths
 # Copied alongside the weights so the checkpoint is self-contained -- Session() resolves
 # the tokenizer from the model directory, and a bare safetensors file has no tokenizer.
 SIDECARS = (
-    "config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json",
-    "merges.txt", "preprocessor_config.json", "generation_config.json",
-    "special_tokens_map.json", "chat_template.jinja",
+    "config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+    "merges.txt",
+    "preprocessor_config.json",
+    "generation_config.json",
+    "special_tokens_map.json",
+    "chat_template.jinja",
 )
 
 # Group size each mode actually supports. affine is free-ish; the float modes are fixed by
@@ -43,9 +49,15 @@ def default_out(model: str, bits: int, group_size: int, mode: str) -> Path:
     return paths.models_dir() / f"{stem}-{tag}"
 
 
-def quantize(model: str, *, bits: int = 8, group_size: int | None = None,
-             mode: str = "affine", out: Path | None = None,
-             on_status=None) -> Path:
+def quantize(
+    model: str,
+    *,
+    bits: int = 8,
+    group_size: int | None = None,
+    mode: str = "affine",
+    out: Path | None = None,
+    on_status=None,
+) -> Path:
     """Quantise `model` and return the directory it was written to."""
     import mlx.core as mx  # ty: ignore[unresolved-import]
     from mlx import nn

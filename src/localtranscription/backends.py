@@ -157,8 +157,7 @@ def resolve_checkpoint(ref: str) -> str:
     known = [p.name for p in local_checkpoints()]
     listing = ("\n  " + "\n  ".join(known)) if known else " (none yet -- run `lt quantize`)"
     raise BackendUnavailable(
-        f"no checkpoint {ref!r}: not a path, and not in {models}."
-        f"\nAvailable:{listing}"
+        f"no checkpoint {ref!r}: not a path, and not in {models}.\nAvailable:{listing}"
     )
 
 
@@ -196,9 +195,14 @@ class TorchBackend:
     # is nothing to hook here. Partials re-transcribe the prefix on this backend.
     streaming = False
 
-    def __init__(self, model: str = DEFAULT_ASR,
-                 aligner: str | None = DEFAULT_ALIGNER,
-                 device: str = "mps", dtype: str = "bf16", on_status=None):
+    def __init__(
+        self,
+        model: str = DEFAULT_ASR,
+        aligner: str | None = DEFAULT_ALIGNER,
+        device: str = "mps",
+        dtype: str = "bf16",
+        on_status=None,
+    ):
         import torch
         from qwen_asr import Qwen3ASRModel
         from transformers.utils import logging as hf_logging
@@ -210,8 +214,11 @@ class TorchBackend:
         # the cursor. Hub *download* bars are separate and still show on first run.
         hf_logging.disable_progress_bar()
 
-        resolved = _dtype({"bf16": torch.bfloat16, "fp16": torch.float16,
-                           "fp32": torch.float32}, dtype, "torch")
+        resolved = _dtype(
+            {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32},
+            dtype,
+            "torch",
+        )
 
         say = on_status or (lambda m: None)
         say(f"loading {model} on {device}")
@@ -331,7 +338,9 @@ class _MlxStream:
                 chunk_size_sec=self._chunk_sec,
                 max_context_sec=self._max_context_sec,
             )
-        self._state = self._session.feed_audio(np.asarray(pcm, dtype=np.float32), self._state)
+        self._state = self._session.feed_audio(
+            np.asarray(pcm, dtype=np.float32), self._state
+        )
         return (self._state.text or "").strip()
 
     def close(self) -> None:
@@ -396,10 +405,10 @@ class _MlxDraftDecoder:
         self._prev: list[int] = []
         self._at: float | None = None
         self._ngram: dict = {}
-        self._hits = 0      # draft tokens accepted this pass
-        self._tries = 0     # verifications spent earning them
+        self._hits = 0  # draft tokens accepted this pass
+        self._tries = 0  # verifications spent earning them
         self._paying = True
-        self.accepted = 0   # totals across the session, for the HUD and the tests
+        self.accepted = 0  # totals across the session, for the HUD and the tests
         self.generated = 0
         self.verifies = 0
 
@@ -423,7 +432,7 @@ class _MlxDraftDecoder:
         prev = self._prev
         for n in range(1, self.KEY + 1):
             for i in range(len(prev) - n + 1):
-                self._ngram[tuple(prev[i:i + n])] = i + n
+                self._ngram[tuple(prev[i : i + n])] = i + n
 
     def _draft(self, out: list[int]) -> list[int]:
         """What the previous pass said next, from wherever we are in it now.
@@ -441,7 +450,7 @@ class _MlxDraftDecoder:
         for n in range(min(self.KEY, len(out)), 0, -1):
             at = self._ngram.get(tuple(out[-n:]))
             if at is not None:
-                return self._prev[at:at + self.WINDOW]
+                return self._prev[at : at + self.WINDOW]
         return []
 
     def transcribe(self, audio: np.ndarray, *, utterance: float) -> str:
@@ -466,19 +475,31 @@ class _MlxDraftDecoder:
 
         model, tok = self._session.model, self._session.tokenizer
         dtype = self._session.dtype
-        cfg = GenerationConfig(max_new_tokens=resolve_max_new_tokens(
-            2048, audio_duration_sec=len(audio) / 16000))
+        cfg = GenerationConfig(
+            max_new_tokens=resolve_max_new_tokens(
+                2048, audio_duration_sec=len(audio) / 16000
+            )
+        )
 
         mel, lens = compute_features(audio)
         feats, _ = model.audio_tower(mel.astype(dtype), lens)
-        ids = mx.array([tok.build_prompt_tokens(
-            n_audio_tokens=feats.shape[1], language=self._language, context="")])
+        ids = mx.array(
+            [
+                tok.build_prompt_tokens(
+                    n_audio_tokens=feats.shape[1], language=self._language, context=""
+                )
+            ]
+        )
         seq = ids.shape[1]
         pos = mx.arange(seq)[None, :]
 
         cache = model.create_cache(max_seq_len=seq + cfg.max_new_tokens)
-        logits = model.prefill(input_ids=ids, audio_features=feats,
-                               position_ids=mx.stack([pos, pos, pos], axis=1), cache=cache)
+        logits = model.prefill(
+            input_ids=ids,
+            audio_features=feats,
+            position_ids=mx.stack([pos, pos, pos], axis=1),
+            cache=cache,
+        )
         token = int(mx.argmax(logits[0, -1]).item())
         out = [token]
         decode_pos = mx.arange(seq, seq + cfg.max_new_tokens + 1)[None, :]
@@ -490,11 +511,13 @@ class _MlxDraftDecoder:
                 break
             # Whatever the last pass said from here on. Empty once we pass its end --
             # which is the tail this partial exists to add.
-            draft = self._draft(out)[:max(0, cfg.max_new_tokens - step - 1)]
+            draft = self._draft(out)[: max(0, cfg.max_new_tokens - step - 1)]
             if not draft:
-                logits = model.step(input_ids=mx.array([[token]]),
-                                    position_ids=decode_pos[:, :, step - 1:step],
-                                    cache=cache)
+                logits = model.step(
+                    input_ids=mx.array([[token]]),
+                    position_ids=decode_pos[:, :, step - 1 : step],
+                    cache=cache,
+                )
                 token = int(mx.argmax(logits[0, -1]).item())
                 out.append(token)
                 step += 1
@@ -502,7 +525,7 @@ class _MlxDraftDecoder:
 
             verify = model.step_many(
                 input_ids=mx.array([[token, *draft]]),
-                position_ids=decode_pos[:, :, step - 1:step + len(draft)],
+                position_ids=decode_pos[:, :, step - 1 : step + len(draft)],
                 cache=cache,
             )
             pred = [int(x) for x in mx.argmax(verify, axis=-1)[0].tolist()]
@@ -527,8 +550,11 @@ class _MlxDraftDecoder:
                 token = tk
                 out.append(tk)
                 step += 1
-                if step >= cfg.max_new_tokens or tk in cfg.eos_token_ids \
-                        or _detect_repetition(out):
+                if (
+                    step >= cfg.max_new_tokens
+                    or tk in cfg.eos_token_ids
+                    or _detect_repetition(out)
+                ):
                     stop = True
                     break
             if stop:
@@ -585,9 +611,13 @@ class MlxBackend:
     streaming = True
     drafting = True
 
-    def __init__(self, model: str = DEFAULT_ASR,
-                 aligner: str | None = DEFAULT_ALIGNER,
-                 dtype: str = "fp16", on_status=None):
+    def __init__(
+        self,
+        model: str = DEFAULT_ASR,
+        aligner: str | None = DEFAULT_ALIGNER,
+        dtype: str = "fp16",
+        on_status=None,
+    ):
         try:
             import mlx.core as mx  # ty: ignore[unresolved-import]
             from mlx_qwen3_asr import ForcedAligner, Session
@@ -597,8 +627,9 @@ class MlxBackend:
                 "`uv sync --extra mlx`, or use --backend torch"
             ) from e
 
-        resolved = _dtype({"fp16": mx.float16, "bf16": mx.bfloat16,
-                           "fp32": mx.float32}, dtype, "mlx")
+        resolved = _dtype(
+            {"fp16": mx.float16, "bf16": mx.bfloat16, "fp32": mx.float32}, dtype, "mlx"
+        )
 
         say = on_status or (lambda m: None)
         say(f"loading {model} via mlx")
@@ -644,8 +675,9 @@ class MlxBackend:
             language=getattr(r, "language", "") or "",
         )
 
-    def open_stream(self, *, language: str, chunk_sec: float = 2.0,
-                    max_context_sec: float = 30.0) -> _MlxStream:
+    def open_stream(
+        self, *, language: str, chunk_sec: float = 2.0, max_context_sec: float = 30.0
+    ) -> _MlxStream:
         return _MlxStream(self._session, language, chunk_sec, max_context_sec)
 
     def open_draft(self, *, language: str) -> _MlxDraftDecoder:
@@ -673,7 +705,9 @@ def resolve_dtype(backend: str, dtype: str | None) -> str:
         cls = BACKENDS.get(backend)
         return cls.default_dtype if cls else "fp16"
     if dtype not in DTYPES:
-        raise BackendUnavailable(f"unknown dtype {dtype!r}; choose from {', '.join(DTYPES)}")
+        raise BackendUnavailable(
+            f"unknown dtype {dtype!r}; choose from {', '.join(DTYPES)}"
+        )
     return dtype
 
 
@@ -688,8 +722,9 @@ def open_partial_draft(backend: Backend, *, language: str):
     return backend.open_draft(language=language)  # ty: ignore[unresolved-attribute]
 
 
-def open_partial_stream(backend: Backend, *, language: str,
-                        chunk_sec: float) -> PartialStream | None:
+def open_partial_stream(
+    backend: Backend, *, language: str, chunk_sec: float
+) -> PartialStream | None:
     """A stream for provisional passes, or None if this backend has no incremental decode.
 
     The capability is probed rather than required of the Backend protocol: making it a
@@ -701,13 +736,21 @@ def open_partial_stream(backend: Backend, *, language: str,
     if not getattr(backend, "streaming", False):
         return None
     return backend.open_stream(  # ty: ignore[unresolved-attribute]
-        language=language, chunk_sec=chunk_sec)
+        language=language, chunk_sec=chunk_sec
+    )
 
 
-def load_backend(name: str, *, model: str | None = None,
-                 aligner: str | None = None, device: str = "mps",
-                 dtype: str | None = None, on_status=None,
-                 warmup: bool = True, align: bool = True) -> Backend:
+def load_backend(
+    name: str,
+    *,
+    model: str | None = None,
+    aligner: str | None = None,
+    device: str = "mps",
+    dtype: str | None = None,
+    on_status=None,
+    warmup: bool = True,
+    align: bool = True,
+) -> Backend:
     """Load a backend. align=False skips the forced aligner entirely.
 
     Not the same as passing timestamps=False per call: the aligner is a second set of
@@ -738,7 +781,9 @@ def load_backend(name: str, *, model: str | None = None,
         # the path that will actually run: asking for timestamps here without an aligner
         # raises, and warming the aligned path when nothing will use it is wasted load.
         backend.transcribe(
-            np.zeros(16000, dtype=np.float32), 16000, language="English",
+            np.zeros(16000, dtype=np.float32),
+            16000,
+            language="English",
             timestamps=align,
         )
     return backend

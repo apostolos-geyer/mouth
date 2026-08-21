@@ -59,8 +59,9 @@ class SessionRecorder:
         with self._lock:
             self._pending.pop(start, None)
 
-    def add(self, audio: np.ndarray, start: float, text: str, words, language: str,
-            took: float) -> Path:
+    def add(
+        self, audio: np.ndarray, start: float, text: str, words, language: str, took: float
+    ) -> Path:
         import soundfile as sf
 
         with self._lock:

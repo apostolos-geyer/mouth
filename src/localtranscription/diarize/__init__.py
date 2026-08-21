@@ -88,8 +88,9 @@ def label_words(words: list[dict], turns: list[Turn]) -> list[dict]:
     return out
 
 
-def merge_turns(turns: list[Turn], max_gap: float = 0.5,
-                min_duration: float = 0.25) -> list[Turn]:
+def merge_turns(
+    turns: list[Turn], max_gap: float = 0.5, min_duration: float = 0.25
+) -> list[Turn]:
     """Join same-speaker turns separated by less than `max_gap`, drop slivers.
 
     Frame-level output is choppy -- a speaker's own pauses between words read as turn
