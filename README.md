@@ -8,12 +8,22 @@ Adapted from the offline pipeline at `~/Desktop/school/spring-2026/tools/qwen-tr
 ## Install
 
 ```sh
-uv tool install ".[mlx,diarize]"    # a system-wide `lt`, from a clone
-uv tool update-shell                # once, if uv's bin dir isn't on your PATH yet
+uv tool install -e ".[mlx,diarize]"    # a system-wide `lt`, live against this clone
+uv tool update-shell                   # once, if uv's bin dir isn't on your PATH yet
 ```
 
-That's a snapshot of the code, not a link to it: rerun with `--force` after changing
-anything, or install `-e` instead and edits go live.
+`-e` links the install to `src/` instead of copying it, so edits are live and there's no
+reinstall step at all. Drop it for a snapshot — but then `--force` is *not* enough to
+update one. uv caches the built wheel for a local path, so a rebuild needs
+`--refresh-package localtranscription`, and without it the install silently stays behind.
+
+That failure is worth recognising, because it doesn't look like a stale binary: an old
+`lt` paired with a current config file rejects its own config.
+
+```
+$ lt tui
+Invalid value for --config: unknown option --min-speech.
+```
 
 The extras are the two heavy optional paths — `mlx` is the MLX backend (`--backend mlx`,
 and what `lt quantize` needs), `diarize` is `lt diarize`. Neither is a default dependency,
