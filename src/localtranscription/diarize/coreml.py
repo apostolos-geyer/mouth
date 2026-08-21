@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import functools
 from pathlib import Path
-from typing import Optional
 
 DIARIZATION_REPO = "FluidInference/speaker-diarization-coreml"
 
@@ -61,7 +60,7 @@ def load(path: str, compute_units: str = "ALL"):
 
 
 def resolve(repo: str, name: str, compute_units: str = "ALL",
-            override: Optional[str] = None):
+            override: str | None = None):
     """Fetch `name`.mlmodelc out of `repo` (or use a local override) and load it."""
     if override:
         return load(str(Path(override)), compute_units)

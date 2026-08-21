@@ -275,7 +275,7 @@ def test_excerpt_attributes_every_labelled_turn_correctly(excerpt_turns):
             if ov:
                 share[t.speaker] = share.get(t.speaker, 0.0) + ov
         assert share, f"nothing predicted over {span['text'][:40]!r}"
-        top = max(share, key=share.get)
+        top = max(share, key=lambda spk: share[spk])
         assert share[top] / sum(share.values()) > 0.6, f"{span['speaker']} span is muddled"
         dominant.setdefault(span["speaker"], set()).add(top)
 

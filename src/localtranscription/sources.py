@@ -6,9 +6,9 @@ import json
 import queue
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Optional
 
 import numpy as np
 
@@ -29,11 +29,11 @@ def ambient_threshold(levels) -> float:
     return max(3.0 * float(np.median(levels)), 0.005)
 
 
-def _mic_key(mic: Optional[int]) -> str:
+def _mic_key(mic: int | None) -> str:
     return "default" if mic is None else str(mic)
 
 
-def cached_threshold(mic: Optional[int], path: Optional[Path] = None) -> Optional[float]:
+def cached_threshold(mic: int | None, path: Path | None = None) -> float | None:
     """A threshold measured on a previous run, or None.
 
     Keyed by device because thresholds describe a microphone in a room, not a machine --
@@ -49,8 +49,8 @@ def cached_threshold(mic: Optional[int], path: Optional[Path] = None) -> Optiona
     return value if value > 0 else None
 
 
-def remember_threshold(mic: Optional[int], value: float,
-                       path: Optional[Path] = None) -> None:
+def remember_threshold(mic: int | None, value: float,
+                       path: Path | None = None) -> None:
     """Record a calibration for next time. Best-effort: never fails a session."""
     path = path or paths.calibration_file()
     try:
@@ -71,9 +71,9 @@ def remember_threshold(mic: Optional[int], value: float,
 class MicSource:
     """Live microphone frames. Also exposes ambient calibration."""
 
-    mic: Optional[int] = None
+    mic: int | None = None
     _q: queue.Queue = field(default_factory=queue.Queue)
-    _stream: object = None
+    _stream: object | None = None
 
     def open(self):
         import sounddevice as sd
@@ -94,8 +94,8 @@ class MicSource:
 
     def close(self):
         if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
+            self._stream.stop()   # ty: ignore[unresolved-attribute]
+            self._stream.close()  # ty: ignore[unresolved-attribute]
 
     def calibrate(self, seconds: float = 1.0, stop=None) -> float:
         """Measure ambient noise so the threshold suits the room, not a guess."""
@@ -151,5 +151,5 @@ class WavSource:
             yield self._audio[i : i + FRAME_LEN]
 
 
-def make_source(mic: Optional[int], wav: Optional[Path], realtime: bool = False):
+def make_source(mic: int | None, wav: Path | None, realtime: bool = False):
     return WavSource(wav, realtime=realtime) if wav else MicSource(mic)

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Optional
 
 
 def fmt_srt_time(t: float) -> str:
@@ -48,6 +47,8 @@ def words_to_timestamped_md(items, group_seconds=20):
 
     def flush():
         if bucket_words:
+            # A non-empty bucket has a start: both are set on the same word.
+            assert bucket_start is not None
             lines.append(f"**[{fmt_clock(bucket_start)}]** {' '.join(bucket_words)}")
             lines.append("")
 
@@ -63,7 +64,7 @@ def words_to_timestamped_md(items, group_seconds=20):
     return "\n".join(lines)
 
 
-def write_outputs(out_dir: Path, segments, words, stem=None) -> Optional[Path]:
+def write_outputs(out_dir: Path, segments, words, stem=None) -> Path | None:
     """Write the same four artifacts the offline tool produced."""
     segments = sorted(segments, key=lambda s: s[0])
     words = sorted(words, key=lambda w: w["start"])

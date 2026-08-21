@@ -73,7 +73,10 @@ class SessionRecorder:
             # FLAC needs an integer subtype; PCM_16 is lossless for our purposes and
             # roughly halves the size versus raw wav.
             sf.write(str(path), audio, self.sample_rate, format="FLAC", subtype="PCM_16")
-        except Exception:
+        except (RuntimeError, OSError, ValueError):
+            # soundfile raises RuntimeError for an unsupported format/subtype pairing and
+            # OSError for anything libsndfile refuses to open. Falling back to wav keeps
+            # the utterance; losing it to an encoding preference would not be a trade.
             path = self.dir / f"{uid}.wav"
             sf.write(str(path), audio, self.sample_rate)
 

@@ -164,6 +164,7 @@ def segment_utterances(frame_iter, threshold: float, on_level=None,
             next_interim = None
             preroll.clear()
         elif next_interim is not None and voiced >= min_voiced and utt_sec >= next_interim:
+            assert cadence is not None  # next_interim is only ever set from one
             next_interim = cadence.next_at(utt_sec)
             if incremental:
                 fresh = utterance[sent:]

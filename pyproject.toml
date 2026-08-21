@@ -34,5 +34,66 @@ packages = ["src/localtranscription"]
 
 [dependency-groups]
 dev = [
+    "pyrefly>=1.2.0",
     "pytest>=9.1.1",
+    "ruff>=0.16.4",
+    "ty>=0.0.73",
 ]
+
+[tool.ruff]
+# The codebase wraps at ~92; p99 of the existing lines is 92 and the intent is visible.
+line-length = 92
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "F",    # pyflakes: real errors -- unused imports, undefined names
+    "E", "W",  # pycodestyle
+    "I",    # import sorting
+    "UP",   # pyupgrade: this targets 3.12+, so nothing here needs a 3.8 spelling
+    "B",    # bugbear
+    "C4",   # comprehensions
+    "SIM",  # simplify
+    "RUF",
+    "PL",   # pylint subset
+    "BLE",  # blind excepts
+]
+ignore = [
+    # typer *requires* `x: T = typer.Option(...)` in signatures. B008 exists to catch a
+    # mutable default evaluated once; here that evaluation is the API.
+    "B008",
+    # Long lines are already capped by line-length; E501 on top of the formatter only
+    # ever fires on strings and URLs that cannot be wrapped.
+    "E501",
+    # Imports live inside functions on purpose, and it is load-bearing: `lt devices`
+    # must not import torch, and dictation starting on a keypress depends on nothing
+    # heavy being imported until something needs it. This rule is a straight inversion
+    # of the design.
+    "PLC0415",
+    # Same family as PLR0913 -- see below. The signatures this fires on are keyword-only
+    # for exactly the reason it is complaining about.
+    "PLR0917",
+    # Complexity metrics measure the wrong thing here: segment_utterances and the decode
+    # loop are long because they are state machines, and cutting them into named pieces
+    # would spread the state, not reduce it.
+    "PLR0911", "PLR0912", "PLR0913", "PLR0915", "PLR2004",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# One import sits below a statement on purpose: `_DIA = OfflineConfig()` reads the
+# diarizer's real defaults so the CLI mirrors them instead of restating them, and it has
+# to run before the flags that reference it are defined.
+"src/localtranscription/app.py" = ["BLE001", "E402"]
+# A session must survive a bad chunk, a malformed cache file, or a backend that raises
+# something undocumented. These handlers are deliberate and each says so in a comment.
+"src/localtranscription/engine.py" = ["BLE001"]
+"src/localtranscription/sources.py" = ["BLE001"]
+"src/localtranscription/tui.py" = ["BLE001"]
+
+[tool.ty.src]
+include = ["src", "tests"]
+
+[tool.ty.environment]
+# The package lives under src/, so imports resolve the way they do at runtime rather
+# than only when the editable install happens to be current.
+root = ["./src"]

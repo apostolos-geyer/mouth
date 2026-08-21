@@ -32,13 +32,12 @@ def load(path: Path | str, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
         # Fall through to PyAV rather than hand-rolling a resampler.
 
     import av
+    from av.audio.resampler import AudioResampler
 
     container = av.open(str(path))
     if not container.streams.audio:
         raise ValueError(f"{path} has no audio stream")
-    resampler = av.audio.resampler.AudioResampler(
-        format="flt", layout="mono", rate=sample_rate
-    )
+    resampler = AudioResampler(format="flt", layout="mono", rate=sample_rate)
     chunks: list[np.ndarray] = []
     for frame in container.decode(audio=0):
         for out in resampler.resample(frame):

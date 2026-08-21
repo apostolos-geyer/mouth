@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
@@ -197,7 +197,7 @@ class TorchBackend:
     streaming = False
 
     def __init__(self, model: str = DEFAULT_ASR,
-                 aligner: Optional[str] = DEFAULT_ALIGNER,
+                 aligner: str | None = DEFAULT_ALIGNER,
                  device: str = "mps", dtype: str = "bf16", on_status=None):
         import torch
         from qwen_asr import Qwen3ASRModel
@@ -254,8 +254,8 @@ def _load_mlx_model(path_or_repo: str, dtype):
     can't fill and load_weights raises. Mirroring the load path here is what makes those
     formats selectable at all.
     """
-    import mlx.core as mx
-    import mlx.nn as nn
+    import mlx.core as mx  # ty: ignore[unresolved-import]
+    from mlx import nn
     from mlx.utils import tree_flatten
     from mlx_qwen3_asr.config import Qwen3ASRConfig
     from mlx_qwen3_asr.convert import remap_weights
@@ -291,7 +291,8 @@ def _load_mlx_model(path_or_repo: str, dtype):
         model.load_weights(list(weights.items()))
         if dtype != mx.float32:
             model.load_weights(
-                list(tree_flatten(_cast_tree_dtype(model.parameters(), dtype)))
+                # mlx ships no stubs, so tree_flatten's return type is guesswork here.
+                list(tree_flatten(_cast_tree_dtype(model.parameters(), dtype)))  # ty: ignore[invalid-argument-type]
             )
 
     mx.eval(model.parameters())
@@ -393,7 +394,7 @@ class _MlxDraftDecoder:
         self._session = session
         self._language = language
         self._prev: list[int] = []
-        self._at: Optional[float] = None
+        self._at: float | None = None
         self._ngram: dict = {}
         self._hits = 0      # draft tokens accepted this pass
         self._tries = 0     # verifications spent earning them
@@ -444,7 +445,7 @@ class _MlxDraftDecoder:
         return []
 
     def transcribe(self, audio: np.ndarray, *, utterance: float) -> str:
-        import mlx.core as mx
+        import mlx.core as mx  # ty: ignore[unresolved-import]
         from mlx_qwen3_asr.audio import compute_features
         from mlx_qwen3_asr.generate import (
             GenerationConfig,
@@ -585,10 +586,10 @@ class MlxBackend:
     drafting = True
 
     def __init__(self, model: str = DEFAULT_ASR,
-                 aligner: Optional[str] = DEFAULT_ALIGNER,
+                 aligner: str | None = DEFAULT_ALIGNER,
                  dtype: str = "fp16", on_status=None):
         try:
-            import mlx.core as mx
+            import mlx.core as mx  # ty: ignore[unresolved-import]
             from mlx_qwen3_asr import ForcedAligner, Session
         except ImportError as e:
             raise BackendUnavailable(
@@ -666,7 +667,7 @@ def available(name: str) -> bool:
     return all(importlib.util.find_spec(m) is not None for m in cls.requires)
 
 
-def resolve_dtype(backend: str, dtype: Optional[str]) -> str:
+def resolve_dtype(backend: str, dtype: str | None) -> str:
     """`--dtype auto` means whichever precision that backend is actually fast in."""
     if dtype in (None, "", "auto"):
         cls = BACKENDS.get(backend)
@@ -684,11 +685,11 @@ def open_partial_draft(backend: Backend, *, language: str):
     """
     if not getattr(backend, "drafting", False):
         return None
-    return backend.open_draft(language=language)
+    return backend.open_draft(language=language)  # ty: ignore[unresolved-attribute]
 
 
 def open_partial_stream(backend: Backend, *, language: str,
-                        chunk_sec: float) -> Optional[PartialStream]:
+                        chunk_sec: float) -> PartialStream | None:
     """A stream for provisional passes, or None if this backend has no incremental decode.
 
     The capability is probed rather than required of the Backend protocol: making it a
@@ -699,12 +700,13 @@ def open_partial_stream(backend: Backend, *, language: str,
     """
     if not getattr(backend, "streaming", False):
         return None
-    return backend.open_stream(language=language, chunk_sec=chunk_sec)
+    return backend.open_stream(  # ty: ignore[unresolved-attribute]
+        language=language, chunk_sec=chunk_sec)
 
 
-def load_backend(name: str, *, model: Optional[str] = None,
-                 aligner: Optional[str] = None, device: str = "mps",
-                 dtype: Optional[str] = None, on_status=None,
+def load_backend(name: str, *, model: str | None = None,
+                 aligner: str | None = None, device: str = "mps",
+                 dtype: str | None = None, on_status=None,
                  warmup: bool = True, align: bool = True) -> Backend:
     """Load a backend. align=False skips the forced aligner entirely.
 
@@ -724,7 +726,10 @@ def load_backend(name: str, *, model: Optional[str] = None,
     kwargs = {"model": model, "aligner": aligner, "dtype": dtype, "on_status": on_status}
     if cls.takes_device:
         kwargs["device"] = device
-    backend = cls(**kwargs)
+    # takes_device is a runtime discriminator over two constructors that genuinely differ:
+    # MLX uses unified memory and has no device to place anything on, so it does not take
+    # the argument at all. A checker can only see the union of the two signatures.
+    backend = cls(**kwargs)  # ty: ignore[invalid-argument-type]
 
     if warmup:
         say = on_status or (lambda m: None)

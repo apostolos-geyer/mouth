@@ -7,10 +7,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
-import numpy as np
-
+from . import paths
 from .backends import (
     DEFAULT_ALIGNER,
     DEFAULT_ASR,
@@ -19,11 +17,9 @@ from .backends import (
     open_partial_draft,
     open_partial_stream,
 )
-from . import paths
 from .recorder import SessionRecorder
 from .sources import make_source
-from .vad import (MIN_SPEECH_SEC, SAMPLE_RATE, Cadence, Chunk,
-                  segment_utterances)
+from .vad import MIN_SPEECH_SEC, SAMPLE_RATE, Cadence, Chunk, segment_utterances
 
 LANGUAGES = [
     "Chinese", "English", "Cantonese", "Arabic", "German", "French", "Spanish",
@@ -67,10 +63,11 @@ class Config:
     # "auto" resolves per backend -- bf16 for torch/MPS, fp16 for MLX. Ignored for the
     # weights themselves when the checkpoint is already quantised.
     dtype: str = "auto"
-    mic: Optional[int] = None
-    wav: Optional[Path] = None
-    threshold: Optional[float] = None
-    cadence: Cadence = field(default_factory=Cadence)
+    mic: int | None = None
+    wav: Path | None = None
+    threshold: float | None = None
+    # None means no partials at all, which is what `--interim 0` asks for.
+    cadence: Cadence | None = field(default_factory=Cadence)
     # Voiced audio an utterance needs before it is one. See vad.MIN_SPEECH_SEC.
     min_speech: float = MIN_SPEECH_SEC
     # Experimental: decode partials against the previous partial as a speculative draft.
@@ -112,7 +109,7 @@ class Transcriber:
     """
 
     def __init__(self, backend: Backend, language, on_segment=None, on_error=None,
-                 on_interim=None, recorder: Optional[SessionRecorder] = None,
+                 on_interim=None, recorder: SessionRecorder | None = None,
                  stream=None, timestamps: bool = True, draft=None):
         self.timestamps = timestamps
         # Drafted partial decoder, or None. Finals never use it: they run the aligner and
@@ -205,7 +202,8 @@ class Transcriber:
         self._stream_at = at
 
     def _feed_stream(self, chunk: Chunk) -> Segment | None:
-        t0 = time.monotonic()
+        assert self.stream is not None  # only reached for incremental chunks, which
+        t0 = time.monotonic()           # only exist when a stream was opened
         if self._stream_at != chunk.start:
             self._reset_stream(chunk.start)
         text = self.stream.feed(chunk.audio).strip()
@@ -285,7 +283,7 @@ class Transcriber:
 
 
 
-def run_session(cfg: Config, hooks, backend=None, stop: Optional[threading.Event] = None):
+def run_session(cfg: Config, hooks, backend=None, stop: threading.Event | None = None):
     """Drive one capture session. Returns (segments, words, recorder).
 
     hooks needs: status(str), ready(threshold), bind_stop(Event), level(rms, in_speech),

@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Optional
 
 from . import paths
 
@@ -44,12 +43,12 @@ def default_out(model: str, bits: int, group_size: int, mode: str) -> Path:
     return paths.models_dir() / f"{stem}-{tag}"
 
 
-def quantize(model: str, *, bits: int = 8, group_size: Optional[int] = None,
-             mode: str = "affine", out: Optional[Path] = None,
+def quantize(model: str, *, bits: int = 8, group_size: int | None = None,
+             mode: str = "affine", out: Path | None = None,
              on_status=None) -> Path:
     """Quantise `model` and return the directory it was written to."""
-    import mlx.core as mx
-    import mlx.nn as nn
+    import mlx.core as mx  # ty: ignore[unresolved-import]
+    from mlx import nn
     from mlx.utils import tree_flatten
     from mlx_qwen3_asr.config import Qwen3ASRConfig
     from mlx_qwen3_asr.convert import remap_weights

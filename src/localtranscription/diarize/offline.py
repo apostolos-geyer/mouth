@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
@@ -97,7 +96,7 @@ def _gram(unit: np.ndarray) -> np.ndarray:
     """
     contiguous = np.ascontiguousarray(unit, dtype=np.float32)
     try:
-        import mlx.core as mx
+        import mlx.core as mx  # ty: ignore[unresolved-import]
     except ImportError:
         return contiguous @ contiguous.T
     out = mx.array(contiguous)
@@ -159,7 +158,7 @@ class OfflineConfig:
     # merge heights are 0.87 and 1.07, so 0.95 sits in the middle of a real plateau rather
     # than on a cliff.
     threshold: float = 0.65
-    num_speakers: Optional[int] = None
+    num_speakers: int | None = None
     min_speakers: int = 1
     max_speakers: int = 8
     compute_units: str = "ALL"
@@ -191,7 +190,7 @@ def _reliable(voiced: np.ndarray, shared: np.ndarray) -> np.ndarray:
 
 
 def cluster_embeddings(embeddings: np.ndarray, reliable: np.ndarray,
-                       cfg: "OfflineConfig") -> np.ndarray:
+                       cfg: OfflineConfig) -> np.ndarray:
     """Embeddings -> a global speaker id each.
 
     `reliable` marks the ones clean enough to decide where the clusters *are*; the
@@ -245,7 +244,7 @@ class OfflineDiarizer:
 
     name = "offline"
 
-    def __init__(self, cfg: Optional[OfflineConfig] = None, on_status=None):
+    def __init__(self, cfg: OfflineConfig | None = None, on_status=None):
         self.cfg = cfg or OfflineConfig()
         say = on_status or (lambda m: None)
         say("loading segmentation")
@@ -256,7 +255,7 @@ class OfflineDiarizer:
                             self.cfg.compute_units)
         self.detail = f"coreml · {self.cfg.compute_units.lower()}"
         self._classes = powerset()
-        self._wave_buf: Optional[np.ndarray] = None
+        self._wave_buf: np.ndarray | None = None
 
     # ---------------------------------------------------------------- stages
 
@@ -375,15 +374,15 @@ class OfflineDiarizer:
         # the same person at 00:05 and at 40:00.
         labels = cluster_embeddings(np.stack(vectors), core_mask, cfg)
         n_speakers = int(labels.max()) + 1
-        assignment = {owner: int(lab) for owner, lab in zip(owners, labels)}
+        assignment = {owner: int(lab) for owner, lab in zip(owners, labels, strict=True)}
 
         # Pass 3: vote. Every frame sits under ~WINDOW_SEC/hop windows; a speaker holds the
         # frame if more than half of the windows that saw it agree.
         n_global = int(np.ceil(len(padded) / sample_rate / frame_sec)) + 1
         votes = np.zeros((n_global, n_speakers), dtype=np.float32)
         seen = np.zeros(n_global, dtype=np.float32)
-        for w_i, (s0, active) in enumerate(zip(starts, activities)):
-            off = int(round(s0 / sample_rate / frame_sec))
+        for w_i, (s0, active) in enumerate(zip(starts, activities, strict=True)):
+            off = round(s0 / sample_rate / frame_sec)
             end = min(off + n_frames_win, n_global)
             span = end - off
             seen[off:end] += 1
@@ -402,7 +401,8 @@ class OfflineDiarizer:
             if not on.any():
                 continue
             edges = np.diff(on.astype(np.int8), prepend=0, append=0)
-            for a, b in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
+            for a, b in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1),
+                            strict=True):
                 turns.append(Turn(a * frame_sec, b * frame_sec, spk))
 
         limit = total / sample_rate

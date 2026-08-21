@@ -11,7 +11,7 @@ import math
 import threading
 import time
 from collections import deque
-from typing import Optional
+from typing import ClassVar
 
 from rich.markup import escape
 from rich.text import Text
@@ -44,7 +44,7 @@ def db_frac(rms: float) -> float:
     return min(1.0, max(0.0, (to_db(rms) - DB_FLOOR) / -DB_FLOOR))
 
 
-def gradient_bar(frac: float, width: int, marker: Optional[int] = None) -> str:
+def gradient_bar(frac: float, width: int, marker: int | None = None) -> str:
     """Filled bar, green→yellow→red, with an optional tick showing the VAD threshold."""
     filled = int(frac * width)
     g_end, y_end = int(width * 0.60), int(width * 0.85)
@@ -128,7 +128,7 @@ def build_tui(cfg, backend):
 
         def __init__(self):
             super().__init__(id="transcript")
-            self.active: Optional[Line] = None
+            self.active: Line | None = None
 
         def _trim(self):
             excess = len(self.children) - self.MAX_LINES
@@ -184,7 +184,7 @@ def build_tui(cfg, backend):
         .line {{ height: auto; padding: 0 0 1 0; }}
         Footer {{ background: $surface; }}
         """
-        BINDINGS = [
+        BINDINGS: ClassVar = [
             ("q", "quit", "quit"),
             ("p", "pause", "pause"),
             ("c", "clear", "clear"),
