@@ -623,3 +623,73 @@ def test_config_defaults_are_independent_instances(monkeypatch, tmp_path):
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert Config().out_dir == Config().out_dir
+
+
+# ------------------------------------------------- checkpoint reference resolution
+
+def _make_checkpoint(root: Path, name: str) -> Path:
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "config.json").write_text("{}")
+    return d
+
+
+def test_bare_name_resolves_against_the_checkpoint_dir(monkeypatch, tmp_path):
+    from localtranscription.backends import resolve_checkpoint
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    models = tmp_path / "localtranscription" / "models"
+    _make_checkpoint(models, "qwen3-asr-1.7b-q8g64")
+    assert resolve_checkpoint("qwen3-asr-1.7b-q8g64") == str(models / "qwen3-asr-1.7b-q8g64")
+
+
+def test_stale_models_prefix_still_resolves(monkeypatch, tmp_path):
+    """`-M models/<name>` predates the move to XDG and must keep working.
+
+    Regression: it used to fall through to the Hub and fail as `401 Unauthorized` for a
+    repo that never existed.
+    """
+    from localtranscription.backends import resolve_checkpoint
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    models = tmp_path / "localtranscription" / "models"
+    _make_checkpoint(models, "qwen3-asr-1.7b-q8g64")
+    assert resolve_checkpoint("models/qwen3-asr-1.7b-q8g64") == str(models / "qwen3-asr-1.7b-q8g64")
+
+
+def test_existing_path_wins(monkeypatch, tmp_path):
+    from localtranscription.backends import resolve_checkpoint
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    here = _make_checkpoint(tmp_path / "elsewhere", "mine")
+    assert resolve_checkpoint(str(here)) == str(here)
+
+
+def test_hf_repo_ids_pass_through(monkeypatch, tmp_path):
+    from localtranscription.backends import resolve_checkpoint
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    for repo in ("Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ForcedAligner-0.6B"):
+        assert resolve_checkpoint(repo) == repo
+
+
+def test_missing_local_ref_fails_here_not_at_the_hub(monkeypatch, tmp_path):
+    """A name meant as a path must not be reported as a missing repository."""
+    from localtranscription.backends import BackendUnavailable, resolve_checkpoint
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    models = tmp_path / "localtranscription" / "models"
+    _make_checkpoint(models, "real-one")
+    for ref in ("models/nope", "./nope", "some/deep/path"):
+        with pytest.raises(BackendUnavailable) as exc:
+            resolve_checkpoint(ref)
+        assert "real-one" in str(exc.value), "the error should list what is available"
+
+
+def test_missing_checkpoint_dir_is_not_a_crash(monkeypatch, tmp_path):
+    from localtranscription.backends import BackendUnavailable, resolve_checkpoint
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "absent"))
+    with pytest.raises(BackendUnavailable) as exc:
+        resolve_checkpoint("models/nope")
+    assert "lt quantize" in str(exc.value)

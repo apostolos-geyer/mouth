@@ -71,12 +71,9 @@ def _config(out, language, device, mic, wav, threshold, first, growth, max_gap, 
         raise typer.BadParameter(f"{backend!r} unknown. Try `lt backends`.")
     if dtype not in ("auto", *DTYPES):
         raise typer.BadParameter(f"{dtype!r} unknown. Choose auto, {', '.join(DTYPES)}.")
-    # A local path that doesn't exist is a typo, not a repo id -- catching it here beats a
-    # hub 404 after the spinner has been up for a while.
-    for label, ref in (("--model", model), ("--aligner", aligner)):
-        if ("/" in ref or ref.startswith(".")) and Path(ref).parent.exists() \
-                and not Path(ref).exists() and Path(ref).parts[0] not in ("Qwen",):
-            raise typer.BadParameter(f"{label} {ref!r} looks like a path but doesn't exist.")
+    # Checkpoint refs are resolved in backends.resolve_checkpoint, which knows about the
+    # checkpoint directory. An earlier guard here only fired when the ref's *parent*
+    # existed, so a stale `models/foo` sailed past it and died as a Hub 401.
     cadence = Cadence(first=first, growth=growth, max_gap=max_gap) if first > 0 else None
     return Config(
         out_dir=out, language=language, device=device, backend=backend, model=model,

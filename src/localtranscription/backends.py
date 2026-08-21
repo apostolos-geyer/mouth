@@ -70,8 +70,73 @@ class Backend(Protocol):
     ) -> Transcription: ...
 
 
+class PartialStream(Protocol):
+    """An in-progress utterance that accepts audio incrementally.
+
+    Reached via an optional `streaming = True` class attribute plus `open_stream()`.
+    Deliberately *not* part of the Backend protocol: making it a required attribute there
+    breaks every existing implementer, including the fakes in the test suite, for a
+    capability most backends won't have. The engine probes with getattr instead.
+
+    Only ever used for provisional passes. The final pass is a plain transcribe() over the
+    whole utterance, because that is what carries the forced aligner and what gets saved --
+    so nothing here can affect the transcript that lands on disk.
+    """
+
+    def feed(self, pcm: np.ndarray) -> str:
+        """Add audio, return the best text so far (cumulative, not a delta)."""
+
+    def close(self) -> None:
+        """Drop the session's state. The next utterance starts clean."""
+
+
 class BackendUnavailable(RuntimeError):
     """Raised with an actionable message when a backend's deps aren't installed."""
+
+
+def resolve_checkpoint(ref: str) -> str:
+    """Turn a --model/--aligner value into something loadable, or say why it isn't.
+
+    Accepts, in order: an existing path; a name or path relative to the checkpoint
+    directory; a Hugging Face repo id. The middle case is the one that matters -- `lt
+    quantize` writes under XDG_CACHE_HOME, so `-M qwen3-asr-1.7b-q8g64` and the older
+    `-M models/qwen3-asr-1.7b-q8g64` both have to find it without the caller typing an
+    absolute path.
+
+    Anything that looks local but isn't there fails here, with the list of what is. The
+    alternative is what this function was written to stop: the name falls through to the
+    Hub, which reports `401 Unauthorized` for a repo that was never a repo.
+    """
+    from . import paths
+
+    candidate = Path(ref).expanduser()
+    if candidate.exists():
+        return str(candidate)
+
+    models = paths.models_dir()
+    for guess in (models / ref, models / candidate.name):
+        if guess.exists():
+            return str(guess)
+
+    # A repo id is exactly `owner/name` -- but so is `models/whatever`, and that one was
+    # plainly meant to be a directory. Treat a leading component that names the checkpoint
+    # directory, or an existing directory here, as proof the caller meant a path.
+    parts = [p for p in ref.split("/") if p]
+    local_intent = (
+        ref.startswith((".", "/", "~"))
+        or parts[0] == models.name
+        or Path(parts[0]).is_dir()
+    )
+    if len(parts) == 2 and not local_intent:
+        return ref
+
+    known = sorted(p.name for p in models.glob("*") if (p / "config.json").exists()) \
+        if models.exists() else []
+    listing = ("\n  " + "\n  ".join(known)) if known else " (none yet -- run `lt quantize`)"
+    raise BackendUnavailable(
+        f"no checkpoint {ref!r}: not a path, and not in {models}."
+        f"\nAvailable:{listing}"
+    )
 
 
 def describe_checkpoint(model: str) -> str:
@@ -99,6 +164,9 @@ class TorchBackend:
     """PyTorch + transformers on MPS. The reference implementation."""
 
     name = "torch"
+    # qwen_asr's own streaming path is vLLM-only, and vLLM has no Metal support, so there
+    # is nothing to hook here. Partials re-transcribe the prefix on this backend.
+    streaming = False
 
     def __init__(self, model: str = DEFAULT_ASR, aligner: str = DEFAULT_ALIGNER,
                  device: str = "mps", dtype: str = "bf16", on_status=None):
@@ -210,6 +278,38 @@ def _load_mlx_model(path_or_repo: str, dtype):
     return model
 
 
+class _MlxStream:
+    """One in-progress utterance on mlx-qwen3-asr's incremental decoder.
+
+    `feed_audio` encodes only the audio it hasn't seen and keeps the decoder KV cache
+    across turns, so the cost of watching an utterance grow is linear in its length rather
+    than quadratic. It buffers internally and decodes once it holds `chunk_sec`, which is
+    also how often the text can change.
+    """
+
+    def __init__(self, session, language: str, chunk_sec: float, max_context_sec: float):
+        self._session = session
+        self._language = language
+        self._chunk_sec = chunk_sec
+        self._max_context_sec = max_context_sec
+        self._state = None
+
+    def feed(self, pcm: np.ndarray) -> str:
+        if self._state is None:
+            self._state = self._session.init_streaming(
+                language=self._language,
+                chunk_size_sec=self._chunk_sec,
+                max_context_sec=self._max_context_sec,
+            )
+        self._state = self._session.feed_audio(np.asarray(pcm, dtype=np.float32), self._state)
+        return (self._state.text or "").strip()
+
+    def close(self) -> None:
+        # Dropping the state drops the KV cache with it; the next utterance must not
+        # inherit this one's decoder context or its text.
+        self._state = None
+
+
 class MlxBackend:
     """MLX port (mlx-qwen3-asr).
 
@@ -244,6 +344,7 @@ class MlxBackend:
     """
 
     name = "mlx"
+    streaming = True
 
     def __init__(self, model: str = DEFAULT_ASR, aligner: str = DEFAULT_ALIGNER,
                  dtype: str = "fp16", on_status=None):
@@ -299,6 +400,10 @@ class MlxBackend:
             language=getattr(r, "language", "") or "",
         )
 
+    def open_stream(self, *, language: str, chunk_sec: float = 2.0,
+                    max_context_sec: float = 30.0) -> _MlxStream:
+        return _MlxStream(self._session, language, chunk_sec, max_context_sec)
+
 
 # ---------------------------------------------------------------- registry
 
@@ -331,8 +436,8 @@ def load_backend(name: str, *, model: Optional[str] = None,
             f"unknown backend {name!r}; choose from {', '.join(BACKENDS)}"
         )
     cls = BACKENDS[name]
-    model = model or DEFAULT_ASR
-    aligner = aligner or DEFAULT_ALIGNER
+    model = resolve_checkpoint(model or DEFAULT_ASR)
+    aligner = resolve_checkpoint(aligner or DEFAULT_ALIGNER)
     dtype = resolve_dtype(name, dtype)
 
     # device is torch-only; MLX has unified memory and no device argument.

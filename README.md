@@ -175,12 +175,13 @@ lt models                  # checkpoints available to --model
 lt tui --backend torch     # default: PyTorch + transformers on MPS
 lt tui --backend mlx       # MLX port (needs: uv sync --extra mlx)
 
-lt tui -M models/qwen3-asr-1.7b-q8g64 -b mlx   # a quantised checkpoint
+lt tui -M qwen3-asr-1.7b-q8g64 -b mlx          # a quantised checkpoint, by name
 lt tui --aligner Qwen/Qwen3-ForcedAligner-0.6B --dtype bf16
 ```
 
-Weights are configuration, not constants. `--model` and `--aligner` each take an HF repo
-id or a local directory, and `--dtype` picks compute precision (`auto` = bf16 on torch,
+Weights are configuration, not constants. `--model` and `--aligner` each take a checkpoint
+name (resolved against the checkpoint directory — `lt models` lists them), a path, or an HF
+repo id, and `--dtype` picks compute precision (`auto` = bf16 on torch,
 fp16 on mlx). Quantisation is read off the checkpoint rather than passed as a flag,
 because it is a property of the weights on disk.
 
