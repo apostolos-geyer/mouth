@@ -65,7 +65,10 @@ lt cli --no-record        # don't save audio
 lt dictate -b mlx -M qwen3-asr-1.7b-q8g64 | pbcopy    # same --backend/--model as anywhere
 ```
 
-First run downloads ~5GB of weights. After that the model loads in about 5s.
+First run downloads ~5GB of weights. After that, time-to-ready is a property of the
+backend rather than the size of the checkpoint: torch takes 6-10s depending on whether
+the forced aligner loads with it, and any quantised checkpoint on MLX is ready in under
+half a second.
 
 `--language` is a hint, not a hard constraint — speaking Greek with the English default
 still produces Greek, but inconsistently, romanizing the same phrase on one pass and not
@@ -119,7 +122,7 @@ Okay.
 
 Checked against a 28-minute 3-speaker interview with a hand-corrected reference
 transcript: **6520 words against the reference's 6400**, 3 speakers found unprompted, 16x
-realtime for the transcription and 66x for the diarization.
+realtime for the transcription and 67x for the diarization.
 
 Getting there found two bugs worth naming, because both failed silently:
 
@@ -387,8 +390,8 @@ first partial lands sooner:
 
 | 10s utterance | first text | audio processed |
 |---|---|---|
-| fixed 1.2s (v2) | 1.2s | 53.2s (5.3x realtime) |
-| adaptive (v3) | 0.4s | 31.3s (3.1x realtime) |
+| fixed 1.2s | 1.2s | 53.2s (5.3x realtime) |
+| adaptive (default) | 0.4s | 31.3s (3.1x realtime) |
 | `--partials stream` | 0.4s | 10.0s (1.0x realtime) |
 
 `lt cadence <seconds>` prints this for any setting. `--growth 1.0` reverts to fixed
@@ -432,11 +435,10 @@ The saved transcript is identical either way: the final pass is a full `transcri
 the whole utterance with the forced aligner, and nothing about partials touches it.
 Verified — both modes produced the same text and the same 55 timed words.
 
-Earlier notes here called the 30s case "marginal" on the assumption torch ran ~6x realtime.
-Measurement says otherwise: torch does **~10-15x realtime** for clips of 2s and up (0.19s
-for 2s, 0.57s for 8s, 2.07s for 32s), so a 30s utterance's ~193s of scheduled audio is
-about 16s of compute — roughly half realtime, comfortable rather than marginal. The ~6x
-figure came from a single 3.2s clip where fixed per-call overhead dominates.
+torch does **~10-15x realtime** for clips of 2s and up (0.19s for 2s, 0.57s for 8s,
+2.07s for 32s), so a 30s utterance's ~193s of scheduled audio is about 16s of compute —
+roughly half realtime, and comfortable. Measure this on a clip of 2s or longer: below
+that, fixed per-call overhead dominates and throughput reads several times too low.
 
 ## Dictation
 
@@ -648,11 +650,10 @@ device argument.
 
 ### Measured: quantisation is the whole game
 
-An earlier revision of this file concluded "torch is faster here" — MLX measured ~2x
-*slower* at every clip length, against the port's advertised 3-4x. That was true, and it
-was the wrong comparison: it pitted torch bf16 against MLX **fp16**, and unquantised is
-not how you run MLX. Re-measured on this machine (M3 Max, 40-core GPU), same 1.7B weights,
-per `transcribe()` call:
+MLX unquantised measures ~2x *slower* than torch at every clip length, against the
+port's advertised 3-4x. That makes torch bf16 against MLX **fp16** the wrong comparison to
+run: unquantised is not how you run MLX. Measured on this machine (M3 Max, 40-core GPU),
+same 1.7B weights, per `transcribe()` call:
 
 | clip | torch bf16/MPS | mlx fp16 | mlx q8/g64 | mlx q4/g64 |
 |---|---|---|---|---|
@@ -848,7 +849,7 @@ lt diarize meeting.m4a -n 3                  # exact speaker count, if known
 
 It runs the pyannote community-1 family through **CoreML**, not torch: the segmentation
 and embedding networks go to the ANE/GPU, which leaves the Metal GPU free for ASR. On an
-M3 Max, a 28-minute 3-speaker interview diarizes in **25s — 65x realtime**. pyannote's own
+M3 Max, a 28-minute 3-speaker interview diarizes in **25s — 67x realtime**. pyannote's own
 torch pipeline on MPS is ~24x, and its weights are gated; these conversions are not.
 
 Three stages, which is what the model set dictates:

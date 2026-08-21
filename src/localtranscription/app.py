@@ -917,7 +917,7 @@ def transcribe(
 
     The same VAD, the same model, the same outputs as a live session — but the audio is
     already on disk, so nothing waits on a clock. Measured on an M3 Max with the 8-bit
-    checkpoint, finals run at about [b]12x realtime[/b].
+    checkpoint, finals run at about [b]17x realtime[/b].
 
     Partials are off: there is nobody watching text land, and provisional passes are the
     expensive half of a live session.
