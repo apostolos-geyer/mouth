@@ -465,6 +465,15 @@ thought it heard.
 
 ## Backends
 
+Optional capabilities — incremental streaming, drafted partials — are `runtime_checkable`
+Protocols (`Streaming`, `Drafting`) rather than a `streaming = True` flag beside the
+method, and `Backend` stays one method wide. `isinstance` matches on the method itself, so
+a backend cannot claim a capability it doesn't have or grow one and forget to announce it;
+it also narrows the type, so the call type-checks without a suppression while reaching for
+`open_draft()` *without* probing is still an error. The `getattr` version needed a
+suppression broad enough to hide both.
+
+
 Inference sits behind a `Backend` Protocol in `backends.py`, selected with `--backend`:
 
 ```sh

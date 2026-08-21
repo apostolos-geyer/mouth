@@ -65,10 +65,9 @@ class Backend(Protocol):
 class PartialStream(Protocol):
     """An in-progress utterance that accepts audio incrementally.
 
-    Reached via an optional `streaming = True` class attribute plus `open_stream()`.
-    Deliberately *not* part of the Backend protocol: making it a required attribute there
-    breaks every existing implementer, including the fakes in the test suite, for a
-    capability most backends won't have. The engine probes with getattr instead.
+    Deliberately *not* part of the Backend protocol: making it required there breaks every
+    existing implementer, including the fakes in the test suite, for a capability most
+    backends won't have. Reached through the Streaming protocol below instead.
 
     Only ever used for provisional passes. The final pass is a plain transcribe() over the
     whole utterance, because that is what carries the forced aligner and what gets saved --
@@ -89,6 +88,28 @@ class PartialStream(Protocol):
         """Drop the session's state. The next utterance starts clean."""
 
 
+@runtime_checkable
+class Streaming(Protocol):
+    """A backend that can decode an utterance incrementally."""
+
+    def open_stream(
+        self, *, language: str, chunk_sec: float = 2.0, max_context_sec: float = 30.0
+    ) -> PartialStream: ...
+
+
+@runtime_checkable
+class Drafting(Protocol):
+    """A backend that can decode a partial against the previous one as a draft."""
+
+    def open_draft(self, *, language: str) -> _MlxDraftDecoder: ...
+
+
+# Optional capabilities, kept off Backend so it stays one method wide, and expressed as
+# protocols rather than a `streaming = True` flag beside the method. The flag was a second
+# thing to keep true: a backend could carry it without the method, or grow the method and
+# forget it, and the getattr probe that read it had to be wrapped in a type suppression
+# broad enough to hide an unprobed call as well. isinstance against these narrows instead,
+# so the checker still rejects reaching for open_draft() without asking.
 class BackendUnavailable(RuntimeError):
     """Raised with an actionable message when a backend's deps aren't installed."""
 
@@ -193,8 +214,8 @@ class TorchBackend:
     requires = ("torch", "qwen_asr")
     takes_device = True
     # qwen_asr's own streaming path is vLLM-only, and vLLM has no Metal support, so there
-    # is nothing to hook here. Partials re-transcribe the prefix on this backend.
-    streaming = False
+    # is nothing to hook here: no open_stream, so `isinstance(backend, Streaming)` is
+    # False and partials re-transcribe the prefix on this backend.
 
     def __init__(
         self,
@@ -620,8 +641,6 @@ class MlxBackend:
     default_dtype = "fp16"
     requires = ("mlx_qwen3_asr",)
     takes_device = False  # unified memory; there is no device to place anything on
-    streaming = True
-    drafting = True
 
     def __init__(
         self,
@@ -723,15 +742,15 @@ def resolve_dtype(backend: str, dtype: str | None) -> str:
     return dtype
 
 
-def open_partial_draft(backend: Backend, *, language: str):
+def open_partial_draft(backend: Backend, *, language: str) -> _MlxDraftDecoder | None:
     """A drafted partial decoder, or None if this backend can't do one.
 
     Probed rather than required, for the same reason open_partial_stream is: it needs
     step_many and a trimmable KV cache, which is an mlx_qwen3_asr fact, not a Backend one.
     """
-    if not getattr(backend, "drafting", False):
+    if not isinstance(backend, Drafting):
         return None
-    return backend.open_draft(language=language)  # ty: ignore[unresolved-attribute]
+    return backend.open_draft(language=language)
 
 
 def open_partial_stream(
@@ -742,14 +761,12 @@ def open_partial_stream(
     The capability is probed rather than required of the Backend protocol: making it a
     required attribute breaks every existing implementer, including the fakes in the test
     suite, for something most backends won't have. Probing it *here* rather than in the
-    engine is what keeps the attribute name and the constructor's keywords -- which are
+    engine is what keeps the method name and the constructor's keywords -- which are
     backend facts -- inside this module.
     """
-    if not getattr(backend, "streaming", False):
+    if not isinstance(backend, Streaming):
         return None
-    return backend.open_stream(  # ty: ignore[unresolved-attribute]
-        language=language, chunk_sec=chunk_sec
-    )
+    return backend.open_stream(language=language, chunk_sec=chunk_sec)
 
 
 def load_backend(

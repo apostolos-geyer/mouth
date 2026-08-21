@@ -1454,3 +1454,35 @@ def test_effort_is_described_in_words():
     cheap, dear = tn.CostModel(0.001, 0.0005), tn.CostModel(2.0, 2.0)
     assert tn.evaluate(tn.PROFILES[0], cheap, cheap, 20.0).headroom == "easy"
     assert tn.evaluate(tn.PROFILES[2], dear, dear, 20.0).headroom == "too much"
+
+
+def test_a_capability_cannot_be_claimed_without_the_method():
+    """Optional capabilities are protocols, not flags beside the method.
+
+    A flag is a second thing that has to stay true: a backend can carry it without the
+    method, or grow the method and forget it, and either way the failure lands mid-session
+    as an AttributeError. Matching on the method itself cannot come apart.
+    """
+    from localtranscription.backends import (
+        Backend,
+        Drafting,
+        Streaming,
+        open_partial_draft,
+        open_partial_stream,
+    )
+
+    class Liar:
+        """Claims both capabilities the old way, and has neither."""
+
+        name = detail = "liar"
+        streaming = True
+        drafting = True
+
+        def transcribe(self, audio, sample_rate, *, language, timestamps):
+            return Transcription(text="x")
+
+    liar = Liar()
+    assert isinstance(liar, Backend)
+    assert not isinstance(liar, Streaming) and not isinstance(liar, Drafting)
+    assert open_partial_draft(liar, language="English") is None
+    assert open_partial_stream(liar, language="English", chunk_sec=2.0) is None
