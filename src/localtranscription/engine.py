@@ -253,15 +253,33 @@ class Transcriber:
             stable=self.stream.stable,
         )
 
+    def _emit_interim(self, seg: Segment) -> None:
+        """Publish one provisional segment.
+
+        The three ways a partial can be produced -- streamed, drafted, re-encoded -- all
+        end here. They used to end in three copies of these four lines, and the copies had
+        already started to differ: only the streamed one set `stable`.
+        """
+        if self.recorder:
+            self.recorder.note_interim(seg.start, seg.audio_sec, seg.text, seg.took)
+        if self.on_interim:
+            self.on_interim(seg)
+
+    def _draft_partial(self, chunk: Chunk) -> Segment | None:
+        assert self.draft is not None  # only called when one was opened
+        t0 = time.monotonic()
+        text = self.draft.transcribe(chunk.audio, utterance=chunk.start).strip()
+        if not text:
+            return None
+        return Segment(
+            chunk.start, text, len(chunk.audio) / SAMPLE_RATE, time.monotonic() - t0
+        )
+
     def _transcribe_one(self, chunk: Chunk):
         if chunk.incremental and self.stream is not None:
             seg = self._feed_stream(chunk)
-            if seg is None:
-                return
-            if self.recorder:
-                self.recorder.note_interim(chunk.start, seg.audio_sec, seg.text, seg.took)
-            if self.on_interim:
-                self.on_interim(seg)
+            if seg is not None:
+                self._emit_interim(seg)
             return
 
         if chunk.final:
@@ -272,17 +290,9 @@ class Transcriber:
                 self.draft.reset()
 
         if not chunk.final and self.draft is not None:
-            t0 = time.monotonic()
-            text = self.draft.transcribe(chunk.audio, utterance=chunk.start).strip()
-            if not text:
-                return
-            seg = Segment(
-                chunk.start, text, len(chunk.audio) / SAMPLE_RATE, time.monotonic() - t0
-            )
-            if self.recorder:
-                self.recorder.note_interim(chunk.start, seg.audio_sec, seg.text, seg.took)
-            if self.on_interim:
-                self.on_interim(seg)
+            seg = self._draft_partial(chunk)
+            if seg is not None:
+                self._emit_interim(seg)
             return
 
         t0 = time.monotonic()
@@ -302,10 +312,7 @@ class Transcriber:
         audio_sec = len(chunk.audio) / SAMPLE_RATE
 
         if not chunk.final:
-            if self.recorder:
-                self.recorder.note_interim(chunk.start, audio_sec, text, took)
-            if self.on_interim:
-                self.on_interim(Segment(chunk.start, text, audio_sec, took))
+            self._emit_interim(Segment(chunk.start, text, audio_sec, took))
             return
 
         words = [

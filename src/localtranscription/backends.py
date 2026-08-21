@@ -14,6 +14,7 @@ about neither.
 from __future__ import annotations
 
 import json
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -395,9 +396,24 @@ class _MlxDraftDecoder:
     #: revision. 8 is roughly a clause.
     KEY = 8
 
+    #: And the shortest key allowed to place us. Without a floor the search walks down to
+    #: a single token, which is the state every partial *ends* in: once decode passes the
+    #: end of the previous answer, every key of 2+ tokens contains a new one and misses,
+    #: while a 1-token key still hits somewhere unrelated. Measured over the new tail,
+    #: that issued a draft 58% of the time, averaging 37 tokens, of which 0.34 were
+    #: accepted -- a ~26ms verification to produce a token an 8.94ms step would have.
+    #: 60-120ms per partial, which is 20-30% of what drafting was saving.
+    MIN_KEY = 3
+
     #: A verification costs ~3.5 sequential steps (30.9ms against 8.94ms), and replaces
-    #: accepted+1 of them. Below this it is losing money, so stop drafting the utterance.
+    #: accepted+1 of them. Below this it is losing money, so stop drafting the pass.
     MIN_ACCEPTED = 3
+
+    #: Judged over the last few verifications rather than all of them. A cumulative mean
+    #: cannot fall: a pass that accepts ~380 tokens over six verifications sits at ~63,
+    #: and the handful of bad verifications at the tail can never drag that under 3. The
+    #: guard was therefore only able to catch a pass that was bad from its first look.
+    RECENT = 6
 
     def __init__(self, session, language: str):
         self._session = session
@@ -405,19 +421,16 @@ class _MlxDraftDecoder:
         self._prev: list[int] = []
         self._at: float | None = None
         self._ngram: dict = {}
-        self._hits = 0  # draft tokens accepted this pass
-        self._tries = 0  # verifications spent earning them
+        self._recent: deque[int] = deque(maxlen=self.RECENT)
         self._paying = True
-        self.accepted = 0  # totals across the session, for the HUD and the tests
-        self.generated = 0
-        self.verifies = 0
 
     def reset(self) -> None:
-        """Drop the draft. The next utterance's text is not this one's."""
+        """Drop the draft. The next utterance's text is not this one's.
+
+        Only the draft: the accept history is per pass and transcribe() clears it.
+        """
         self._prev = []
         self._at = None
-        self._hits = self._tries = 0
-        self._paying = True
 
     def _index(self) -> None:
         """Index the previous answer by n-gram, once per pass.
@@ -442,12 +455,12 @@ class _MlxDraftDecoder:
         word inserted near the start and every later token is off by one, the draft stops
         matching, and acceptance collapses for the rest of the utterance -- which is
         exactly what a partial does when a revision lands. Matching on the text itself
-        re-finds the place. Longest key first: a common short phrase can match anywhere,
-        a clause usually can't.
+        re-finds the place. Longest key first, and never shorter than MIN_KEY: a common
+        short phrase can match anywhere, a clause usually can't.
         """
         if not self._prev or not self._paying:
             return []
-        for n in range(min(self.KEY, len(out)), 0, -1):
+        for n in range(min(self.KEY, len(out)), self.MIN_KEY - 1, -1):
             at = self._ngram.get(tuple(out[-n:]))
             if at is not None:
                 return self._prev[at : at + self.WINDOW]
@@ -469,7 +482,7 @@ class _MlxDraftDecoder:
         # Per pass, not per utterance: the first partials carry almost no text to draft
         # from, so they accept little through no fault of the policy. Latching on that
         # switched drafting off for exactly the long later passes it pays best on.
-        self._hits = self._tries = 0
+        self._recent.clear()
         self._paying = True
         self._index()
 
@@ -528,22 +541,22 @@ class _MlxDraftDecoder:
                 position_ids=decode_pos[:, :, step - 1 : step + len(draft)],
                 cache=cache,
             )
-            pred = [int(x) for x in mx.argmax(verify, axis=-1)[0].tolist()]
+            pred = mx.argmax(verify, axis=-1)[0].tolist()  # already python ints
             n = 0
             while n < len(draft) and pred[n] == draft[n]:
                 n += 1
-            self._hits += n
-            self._tries += 1
-            self.verifies += 1
+            self._recent.append(n)
             # Stop paying for drafts once they stop paying for themselves. Costs a few
             # probes per pass rather than a whole pass run at a loss, which is what
             # unstable audio -- music, crosstalk -- does to inter-partial agreement.
-            if self._tries >= 3 and self._hits / self._tries < self.MIN_ACCEPTED:
+            if (
+                len(self._recent) == self.RECENT
+                and sum(self._recent) / self.RECENT < self.MIN_ACCEPTED
+            ):
                 self._paying = False
             # Rewind the KV the rejected tail wrote, or the cache no longer describes the
             # path we are on. Same trim as upstream's speculative loop.
             cache.trim(len(draft) - n)
-            self.accepted += n
 
             stop = False
             for tk in draft[:n]:
@@ -563,7 +576,6 @@ class _MlxDraftDecoder:
             out.append(token)
             step += 1
 
-        self.generated += len(out)
         while out and out[-1] in cfg.eos_token_ids:
             out.pop()
         self._prev = list(out)

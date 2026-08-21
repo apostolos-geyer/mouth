@@ -21,7 +21,6 @@ from __future__ import annotations
 import itertools
 import platform
 import subprocess
-import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -34,7 +33,6 @@ from .vad import FRAME_LEN, MAX_UTTERANCE_SEC, SAMPLE_RATE, Cadence
 @dataclass
 class Machine:
     chip: str
-    cores: int
     memory_gb: float
     platform: str
 
@@ -56,13 +54,10 @@ def _sysctl(key: str) -> str:
 
 def machine() -> Machine:
     """What we are running on. Best-effort: nothing here is load-bearing enough to fail."""
-    import os
-
     chip = _sysctl("machdep.cpu.brand_string") or platform.processor() or platform.machine()
     mem = _sysctl("hw.memsize")
     return Machine(
         chip=chip or "unknown",
-        cores=os.cpu_count() or 0,
         # GiB, not GB: a 128 GB machine reports 137438953472 bytes, and printing
         # "137.4 GB" back at its owner reads as a bug in the tool.
         memory_gb=round(int(mem) / (1024**3), 1) if mem.isdigit() else 0.0,
@@ -77,7 +72,6 @@ def machine() -> Machine:
 class Sample:
     """One recorded utterance, with the measurement the VAD would have made of it."""
 
-    label: str
     audio: np.ndarray
     voiced: int  # frames over the threshold -- the number --min-speech is compared against
 
@@ -101,7 +95,11 @@ def count_voiced(audio: np.ndarray, threshold: float) -> int:
     if n == 0:
         return 0
     frames = audio[: n * FRAME_LEN].reshape(n, FRAME_LEN)
-    return int((np.sqrt((frames.astype(np.float64) ** 2).mean(axis=1)) > threshold).sum())
+    # Native dtype, not float64. segment_utterances computes this per frame in float32
+    # (vad.py), and a frame sitting on the threshold can fall either side of it depending
+    # on the width -- which would mean fitting --min-speech against a number the VAD will
+    # not reproduce.
+    return int((np.sqrt((frames**2).mean(axis=1)) > threshold).sum())
 
 
 def suggest_min_speech(
@@ -180,7 +178,9 @@ class Profile:
 
 
 PROFILES = [
-    Profile("calm", Cadence(0.4, 1.6, 3.0), "text catches up in comfortable chunks"),
+    # Cadence(), not its numbers written out again: app.py documents what restating a
+    # default costs here -- the copy drifts and the real value survives only in tests.
+    Profile("calm", Cadence(), "text catches up in comfortable chunks"),
     Profile(
         "balanced", Cadence(0.15, 1.25, 1.2), "text follows along a sentence at a time"
     ),
@@ -198,10 +198,8 @@ class Verdict:
     partials: int
     compute: float  # seconds of inference, drafted
     compute_full: float  # the same without drafting
-    stale_avg: float
     stale_max: float
     length: float
-    speedup: float = 1.0
 
     @property
     def load(self) -> float:
@@ -253,16 +251,13 @@ def evaluate(
     gaps = [points[0]] + [b - a for a, b in itertools.pairwise(points)]
     costs = [drafted.at(p) for p in points]
     stale = [g + c for g, c in zip(gaps, costs, strict=True)]
-    total, total_full = sum(costs), sum(full.at(p) for p in points)
     return Verdict(
         profile=profile,
         partials=len(points),
-        compute=total,
-        compute_full=total_full,
-        stale_avg=float(np.mean(stale)),
+        compute=sum(costs),
+        compute_full=sum(full.at(p) for p in points),
         stale_max=float(max(stale)),
         length=length,
-        speedup=(total_full / total) if total > 0 else 1.0,
     )
 
 
@@ -280,7 +275,7 @@ def recommend(verdicts: list[Verdict]) -> Verdict:
     for v in ordered:
         if v.load <= SUSTAINABLE:
             return v
-    return max(verdicts, key=lambda v: -v.load)  # nothing fits; the cheapest is least bad
+    return min(verdicts, key=lambda v: v.load)  # nothing fits; the cheapest is least bad
 
 
 # ---------------------------------------------------------------- the config
@@ -322,8 +317,10 @@ def render(
     c = profile.cadence
     lines += [
         "",
-        f"# Cadence profile: {profile.name} -- {profile.blurb}.",
-        "[tui]",
+        f"# How quickly text appears: {profile.name} -- {profile.blurb}.",
+        "# Bare keys, not a [tui] table: `lt cli` shows partials too, and `lt cadence`",
+        "# exists to print what this schedule costs. Under [tui] they kept the shipped",
+        "# schedule and said so confidently.",
         f"interim = {c.first:g}",
         f"growth = {c.growth:g}",
         f"max-gap = {c.max_gap:g}",
@@ -339,25 +336,67 @@ def capture(source, threshold: float, *, limit: float = 12.0) -> Sample | None:
     to measure how short the shortest thing you say actually is -- gating that measurement
     by the value being chosen would only ever confirm the current setting.
     """
+    for sample in samples_from(source, threshold, limit=limit):
+        return sample
+    return None
+
+
+def samples_from(source, threshold: float, *, limit: float | None = None):
+    """Every utterance a frame source produces, as Samples.
+
+    Shared by the microphone and the `--wav` path, which had grown two copies of the same
+    three decisions: run the real VAD, open the gate all the way (min_speech=0.0, because
+    the whole point is measuring how short the shortest thing you say is -- gating that by
+    the value being chosen would only confirm the current setting), and pair each chunk
+    with its voiced-frame count.
+    """
     import threading
 
     from .vad import segment_utterances
 
     stop = threading.Event()
-    deadline = time.monotonic() + limit
-    watch = threading.Timer(limit, stop.set)
-    watch.daemon = True
-    watch.start()
+    watch = threading.Timer(limit, stop.set) if limit else None
+    if watch is not None:
+        watch.daemon = True
+        watch.start()
     try:
         for chunk in segment_utterances(source.frames(stop), threshold, min_speech=0.0):
             if chunk.final:
-                return Sample("", chunk.audio, count_voiced(chunk.audio, threshold))
-            if time.monotonic() > deadline:
-                break
+                yield Sample(chunk.audio, count_voiced(chunk.audio, threshold))
     finally:
-        watch.cancel()
+        if watch is not None:
+            watch.cancel()
         stop.set()
-    return None
+
+
+def measure(
+    backend, drafter, sample: Sample, language: str, on_step=None
+) -> tuple[CostModel, CostModel]:
+    """Time a transcription at a spread of prefix lengths, with and without the draft.
+
+    Here rather than in app.py so that the one part of `lt tune` doing the measuring is
+    testable -- the module docstring promises the arithmetic lives on this side, and the
+    benchmark loop was the piece that had drifted back into the front end.
+
+    Returns (drafted, full). They are the same model when the backend cannot draft.
+    """
+    import time
+
+    lengths = bench_lengths(sample.seconds)
+    full_pts, draft_pts = [], []
+    for at in lengths:
+        pcm = sample.audio[: int(at * SAMPLE_RATE)]
+        t = time.monotonic()
+        backend.transcribe(pcm, SAMPLE_RATE, language=language, timestamps=False)
+        full_pts.append((at, time.monotonic() - t))
+        if drafter is not None:
+            t = time.monotonic()
+            drafter.transcribe(pcm, utterance=0.0)
+            draft_pts.append((at, time.monotonic() - t))
+        if on_step is not None:
+            on_step()
+    full = fit(full_pts)
+    return (fit(draft_pts) if draft_pts else full), full
 
 
 def bench_lengths(seconds: float) -> list[float]:

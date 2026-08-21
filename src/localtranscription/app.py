@@ -10,7 +10,6 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import NamedTuple
 
 import typer
 from rich.console import Console
@@ -61,12 +60,14 @@ CONFIG = typer.Option(
 )
 
 
-class _Root(NamedTuple):
-    """What the root callback resolved, for `lt config` to report."""
+def _config_path(ctx: typer.Context) -> Path:
+    """The config file this invocation is about: --config if given, else the default.
 
-    explicit: Path | None
-    path: Path | None
-    defaults: dict
+    Shared because `lt tune --write` grew its own copy and then ignored the flag: it read
+    defaults out of the file it was pointed at and wrote its result somewhere else.
+    """
+    explicit = ctx.obj if isinstance(ctx.obj, Path) else None
+    return explicit.expanduser() if explicit else paths.config_file()
 
 
 def _params(group) -> dict[str, dict[str, str]]:
@@ -88,7 +89,10 @@ def _params(group) -> dict[str, dict[str, str]]:
             alias[prm.name] = prm.name
             for opt in prm.opts:
                 if opt.startswith("--"):
-                    alias[opt[2:].replace("-", "_")] = prm.name
+                    # cfgfile._norm, not a second copy: these keys and the ones read out
+                    # of the file have to normalise identically or a real option silently
+                    # fails to resolve.
+                    alias[cfgfile._norm(opt[2:])] = prm.name
         out[name] = alias
     return out
 
@@ -96,7 +100,10 @@ def _params(group) -> dict[str, dict[str, str]]:
 @app.callback()
 def _root(ctx: typer.Context, config: Path | None = CONFIG):
     """Live local transcription with [b]Qwen3-ASR[/b] + forced alignment."""
-    ctx.obj = _Root(explicit=config, path=None, defaults={})
+    # The --config path, for the commands that need to know which file was meant. Only
+    # that: `lt config` re-reads and re-parses on purpose, because it has to survive a
+    # file too broken for this callback to have parsed at all.
+    ctx.obj = config
     # `lt config` is how you inspect a file that may not parse, so it does its own
     # loading and reports the failure instead of being taken down by it.
     if ctx.invoked_subcommand == "config":
@@ -111,7 +118,6 @@ def _root(ctx: typer.Context, config: Path | None = CONFIG):
     # This is the whole mechanism: click consults default_map per parameter during
     # parsing, so a flag that was actually typed still wins, with no plumbing per flag.
     ctx.default_map = defaults
-    ctx.obj = _Root(explicit=config, path=path, defaults=defaults)
 
 
 # Shared across the run commands; typer accepts the same OptionInfo in several signatures.
@@ -220,6 +226,14 @@ def _config(
         raise typer.BadParameter(f"{dtype!r} unknown. Choose auto, {', '.join(DTYPES)}.")
     if partials not in ("reencode", "stream"):
         raise typer.BadParameter(f"{partials!r} unknown. Choose reencode or stream.")
+    # Say so rather than ignoring it. --partials stream does its own incremental decoding
+    # and has nothing for a draft to accelerate, so the combination was silently dropping
+    # the flag -- and the starter config listed both as adjacent lines to uncomment.
+    if x_partial_draft and partials == "stream":
+        raise typer.BadParameter(
+            "--x-partial-draft speeds up the default re-encoded partials; "
+            "--partials stream already decodes incrementally. Choose one."
+        )
     if stream_chunk <= 0:
         raise typer.BadParameter("--stream-chunk must be positive.")
     # 0 is meaningful -- every opened utterance counts -- but negative is a typo, and
@@ -547,7 +561,8 @@ def config_(
     """Show the config file and what it sets [dim](--init to start one)[/].
 
     The file only changes what a flag [b]defaults[/b] to; a flag you type still wins.
-    Bare keys are for `tui`, `cli`, `dictate` and `tune`; others take a table:
+    Bare keys reach the commands that listen and the two that describe them; anything
+    else takes a table named after it:
 
         backend = "mlx"
         language = "Greek"
@@ -555,12 +570,11 @@ def config_(
         [dictate]
         hold = true
     """
-    root: _Root = ctx.obj
     # This typer vendors its own click core, so TyperGroup is not a click.Group and an
     # isinstance narrowing here is simply false. The attribute is what matters.
     group = ctx.parent.command if ctx.parent else ctx.command
     commands = getattr(group, "commands", {})
-    path = root.explicit.expanduser() if root.explicit else paths.config_file()
+    path = _config_path(ctx)
 
     if init or (edit and not path.exists()):
         try:
@@ -616,6 +630,7 @@ def _shown(prm, value) -> str:
 
 @app.command()
 def tune(
+    ctx: typer.Context,
     wav: Path | None = typer.Option(
         None, "--wav", help="Measure against a recording instead of the microphone."
     ),
@@ -694,7 +709,7 @@ def tune(
 
     # ------------------------------------------------------------------ 2. listen
     console.print("\n[b]2 · Your voice[/]\n")
-    samples, _ = _tune_listen(wav, mic, phrases)
+    samples = _tune_listen(wav, mic, phrases)
     if not samples:
         raise typer.BadParameter("Nothing was recorded. Try again and speak up.")
 
@@ -719,7 +734,7 @@ def tune(
     t0 = time.monotonic()
     backend_obj = _load(cfg)
     console.print(f"  [dim]model ready in {time.monotonic() - t0:.1f}s[/]")
-    drafted, full, drafting = _tune_measure(tn, cfg, backend_obj, samples)
+    drafted, full, drafting = _tune_measure(cfg, backend_obj, samples)
 
     # ------------------------------------------------------------------ 4. choose
     REF = 20.0
@@ -774,13 +789,10 @@ def tune(
         drafting=drafting,
         note=f"{box.chip} · measured {time.strftime('%Y-%m-%d')}",
     )
-    dest = paths.config_file()
-    if dest.exists():
-        backup = dest.with_suffix(".toml.bak")
-        backup.write_text(dest.read_text())
+    dest = _config_path(ctx)
+    backup = cfgfile.save(dest, text)
+    if backup is not None:
         console.print(f"  [dim]previous settings kept at {backup.name}[/]")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(text)
     console.print(f"\n  [green]Saved.[/] [dim]{dest}[/]")
     console.print("  [dim]Run `lt tui` to use it, or `lt config` to see it.[/]\n")
 
@@ -791,24 +803,17 @@ def _tune_listen(wav: Path | None, mic: int | None, phrases: int):
     Split out so the command above reads as the five steps a person goes through, and so
     the microphone half is one function rather than a branch inside a long body.
     """
-    import threading
-
     from . import tune as tn
     from .sources import make_source
-    from .vad import segment_utterances
 
     if wav is not None:
         src = make_source(None, wav).open()
-        threshold = src.calibrate(1.0)
-        stop = threading.Event()
-        got = [
-            tn.Sample("", c.audio, tn.count_voiced(c.audio, threshold))
-            for c in segment_utterances(src.frames(stop), threshold, min_speech=0.0)
-            if c.final
-        ]
-        src.close()
+        try:
+            got = list(tn.samples_from(src, src.calibrate(1.0)))
+        finally:
+            src.close()
         console.print(f"  [dim]{wav.name} · {len(got)} phrases[/]")
-        return got, threshold
+        return got
 
     ASKS = [
         'a single short word — your name, or "okay"',
@@ -833,17 +838,18 @@ def _tune_listen(wav: Path | None, mic: int | None, phrases: int):
             )
     finally:
         src.close()
-    return out, threshold
+    return out
 
 
-def _tune_measure(tn, cfg, backend_obj, samples):
-    """Time a transcription at a spread of lengths, with and without the speed-up."""
+def _tune_measure(cfg, backend_obj, samples):
+    """Draw a progress bar over tune.measure(). The loop itself lives in tune.py."""
     from rich.progress import BarColumn, Progress, TextColumn
 
+    from . import tune as tn
+
     longest = max(samples, key=lambda s: s.seconds)
-    lengths = tn.bench_lengths(longest.seconds)
+    steps = len(tn.bench_lengths(longest.seconds))
     drafter = open_partial_draft(backend_obj, language=cfg.language)
-    full_pts, draft_pts = [], []
     with Progress(
         TextColumn("  [dim]{task.description}[/]"),
         BarColumn(bar_width=28),
@@ -851,30 +857,27 @@ def _tune_measure(tn, cfg, backend_obj, samples):
         console=console,
         transient=True,
     ) as bar:
-        job = bar.add_task("timing", total=len(lengths))
-        for at in lengths:
-            pcm = longest.audio[: int(at * 16000)]
-            t = time.monotonic()
-            backend_obj.transcribe(pcm, 16000, language=cfg.language, timestamps=False)
-            full_pts.append((at, time.monotonic() - t))
-            if drafter is not None:
-                t = time.monotonic()
-                drafter.transcribe(pcm, utterance=0.0)
-                draft_pts.append((at, time.monotonic() - t))
-            bar.advance(job)
-    full = tn.fit(full_pts)
-    drafted = tn.fit(draft_pts) if draft_pts else full
+        job = bar.add_task("timing", total=steps)
+        drafted, full = tn.measure(
+            backend_obj,
+            drafter,
+            longest,
+            cfg.language,
+            on_step=lambda: bar.advance(job),
+        )
+
     one_sec = full.at(1.0)
     console.print(
         f"  A second of speech takes [b]{one_sec:.2f}s[/] to turn into text"
         f"  [dim](about {1 / one_sec:.0f}x faster than real time)[/]"
     )
-    if draft_pts and full.at(10.0) > drafted.at(10.0) * 1.05:
+    slow, fast = full.at(10.0), drafted.at(10.0)
+    if drafter is not None and slow > fast * 1.05:
         console.print(
-            f"  [dim]An optional speed-up makes long sentences "
-            f"{full.at(10.0) / drafted.at(10.0):.1f}x cheaper here.[/]"
+            f"  [dim]An optional speed-up makes long sentences {slow / fast:.1f}x "
+            f"cheaper here.[/]"
         )
-    return drafted, full, bool(draft_pts)
+    return drafted, full, drafter is not None
 
 
 @app.command()

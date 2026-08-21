@@ -8,10 +8,10 @@ but by construction, because this feeds Click's `default_map` and the layering h
 inside the parser. There is no per-flag plumbing to forget and no "was this passed?"
 sentinel to get wrong, which is the failure mode of every hand-rolled version of this.
 
-Bare keys apply to the commands that listen -- `tui`, `cli`, `dictate`, and `tune`, which
-has to measure the stack the other three will actually run. Anything else takes a table
-named after the command, because the same flag name does not mean the same thing
-everywhere: `--threshold` is an RMS gate to a session and a cosine distance to `diarize`,
+Bare keys apply to the commands that listen, plus the two that describe them -- `tune`
+measures the stack the others run, and `cadence` prints what a schedule costs, so both
+are wrong unless they see the same settings. Anything else takes a table named after the
+command, because the same flag name does not mean the same thing everywhere: `--threshold` is an RMS gate to a session and a cosine distance to `diarize`,
 and a bare key that reached both would quietly ruin one of them.
 
     backend = "mlx"
@@ -30,8 +30,6 @@ never; a typo that silently does nothing is a setting you believe is on for mont
 
 from __future__ import annotations
 
-import difflib
-import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -39,19 +37,32 @@ from typing import Any
 from . import paths
 
 #: Which commands a bare key applies to: the ones that open a session and share an option
-#: vocabulary, plus `tune`, which exists to measure them. Leaving tune out meant it
-#: benchmarked stock torch against the upstream weights while the config pointed every
-#: real command at a quantised MLX checkpoint -- and then recommended a profile from it.
-#: See the module docstring for why this isn't "all of them".
-SESSION = ("tui", "cli", "dictate", "tune")
+#: vocabulary, plus the two that exist to describe them: `tune`, which measures the stack
+#: the others run, and `cadence`, which prints what a partial schedule costs. Both were
+#: omitted at first and both were wrong for it -- tune benchmarked stock torch while the
+#: config pointed every real command at a quantised MLX checkpoint, and `lt cadence`
+#: simulated the shipped schedule rather than the one configured.
+#: See the module docstring for why this still isn't "all of them".
+SESSION = ("tui", "cli", "dictate", "tune", "cadence")
 
-TEMPLATE = """\
+
+def session_list() -> str:
+    """The SESSION tuple as prose, so no doc string has to restate it.
+
+    It was written out by hand in five places and had already drifted in one of them.
+    """
+    names = [f"`lt {c}`" for c in SESSION]
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+_TEMPLATE = """\
 # localtranscription -- defaults for the flags you'd otherwise type every time.
 # A flag on the command line still beats anything in here.
 #
-# Bare keys below apply to `lt tui`, `lt cli`, `lt dictate` and `lt tune`. Every other
-# command takes a table. TOML rule worth knowing: bare keys must come before the first
-# [table] or they land inside it.
+# Bare keys below apply to:
+#   {session}
+# Every other command takes a table. TOML rule worth knowing: bare keys must come
+# before the first [table] or they land inside it.
 
 # backend = "mlx"                   # torch | mlx            (`lt backends`)
 # model = "qwen3-asr-1.7b-q8g64"    # HF repo id, or a local checkpoint from `lt quantize`
@@ -96,6 +107,8 @@ def locate(explicit: Path | None = None) -> Path | None:
 
 def read(path: Path) -> dict[str, Any]:
     """Parse a config file. Both failure modes name the file, since --config may have."""
+    import tomllib
+
     try:
         with path.open("rb") as fh:
             return tomllib.load(fh)
@@ -115,6 +128,8 @@ def _flag(name: str) -> str:
 
 
 def _suggest(key: str, known, fmt=_flag) -> str:
+    import difflib  # error path only, and app.py imports this module on every command
+
     near = difflib.get_close_matches(_norm(key), sorted(known), n=1)
     return f" Did you mean {fmt(near[0])}?" if near else ""
 
@@ -173,9 +188,33 @@ def default_map(
     return out
 
 
+def template() -> str:
+    """The starter config, with the command list filled in from SESSION."""
+    return _TEMPLATE.format(session="  ".join(f"lt {c}" for c in SESSION))
+
+
 def write_template(path: Path) -> None:
     """Drop a starter config. Never clobbers: that file is hand-written by definition."""
     if path.exists():
         raise ConfigError(f"{path}: already exists")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(TEMPLATE)
+    path.write_text(template())
+
+
+def save(path: Path, text: str) -> Path | None:
+    """Write a config, keeping the previous one alongside it.
+
+    Returns where the previous one went, or None if there wasn't one.
+
+    Here rather than in the caller because this module owns the file: `lt tune --write`
+    was reaching past it to hardcode the location, the .bak rule and the mkdir, which is
+    also how it came to ignore the --config path it had just been given.
+    """
+    path = path.expanduser()
+    backup = None
+    if path.exists():
+        backup = path.with_suffix(".toml.bak")
+        backup.write_text(path.read_text())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return backup

@@ -1187,14 +1187,29 @@ def test_draft_realigns_after_a_revision():
     the utterance -- which is precisely what happens when a partial heals.
     """
     prev = [1, 2, 3, 4, 5, 6, 7, 8]
-    generated = [1, 2, 99, 3, 4]  # 99 inserted; 3,4 are prev[2:4]
-    assert _drafter(prev)._draft(generated)[:4] == [5, 6, 7, 8]
+    generated = [1, 2, 99, 3, 4, 5]  # 99 inserted; 3,4,5 are prev[2:5]
+    assert _drafter(prev)._draft(generated)[:3] == [6, 7, 8]
 
 
 def test_draft_prefers_the_most_recent_occurrence():
     """A repeated phrase must resolve to where we are now, not where we were."""
-    d = _drafter([7, 8, 1, 2, 7, 8, 3, 4])
-    assert d._draft([7, 8])[:2] == [3, 4]
+    d = _drafter([7, 8, 9, 1, 2, 7, 8, 9, 3, 4])
+    assert d._draft([7, 8, 9])[:2] == [3, 4]
+
+
+def test_draft_will_not_place_itself_on_a_one_token_match():
+    """The floor under the key length, and it is worth real time.
+
+    Every partial ends by decoding a tail the previous answer does not have. There, keys
+    of two or more tokens all contain a new one and miss -- but a single token still hits
+    somewhere unrelated, and the 64-token draft that follows is a verification that
+    accepts nothing. Measured over the new tail: a draft issued 58% of the time, 37
+    tokens long, 0.34 accepted. Roughly 20-30% of what drafting saves, spent proving the
+    previous answer does not continue here.
+    """
+    d = _drafter([1, 2, 3, 4, 5])
+    assert d._draft([9, 9, 3]) == [], "a one-token tail must not place us"
+    assert d._draft([1, 2, 3])[:2] == [4, 5], "a real key still does"
 
 
 def test_draft_is_empty_when_it_stops_paying():
@@ -1312,7 +1327,7 @@ def test_min_speech_sits_under_your_shortest_word():
 
     def sample(voiced_sec):
         return tn.Sample(
-            "", np.zeros(16, dtype=np.float32), int(voiced_sec * SAMPLE_RATE / FRAME_LEN)
+            np.zeros(16, dtype=np.float32), int(voiced_sec * SAMPLE_RATE / FRAME_LEN)
         )
 
     got = tn.suggest_min_speech([sample(0.2), sample(0.9)])
@@ -1400,9 +1415,13 @@ def test_tuned_config_is_valid_and_says_what_it_set():
     data = tomllib.loads(text)
     assert data["backend"] == "mlx" and data["min-speech"] == 0.12
     assert data["x-partial-draft"] is True
-    assert data["tui"] == {"interim": 0.15, "growth": 1.25, "max-gap": 1.2}
+    # Bare, not under [tui]: `lt cli` draws partials too and `lt cadence` prints what
+    # the schedule costs, so a table would leave both on the shipped defaults.
+    assert (data["interim"], data["growth"], data["max-gap"]) == (0.15, 1.25, 1.2)
     # And it round-trips through the real validator, against the real CLI.
-    assert _map(text)["tui"]["backend"] == "mlx"
+    mapped = _map(text)
+    assert mapped["tui"]["backend"] == "mlx"
+    assert mapped["cadence"]["first"] == 0.15, "the schedule printer must see it too"
 
 
 def test_bench_lengths_span_the_schedule():

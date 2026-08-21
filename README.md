@@ -116,10 +116,17 @@ construction, because this feeds Click's `default_map` and the layering happens 
 parser. There's no per-flag plumbing to forget and no "was this passed?" sentinel to get
 wrong, which is where hand-rolled versions of this leak.
 
-Bare keys apply to the commands that listen — `tui`, `cli`, `dictate`. Everything else
-takes a table named after the command, because the same flag name doesn't mean the same
-thing everywhere: `--threshold` is an RMS gate to a session and a cosine distance to
-`diarize`, and a bare key that reached both would collapse every speaker into one.
+Bare keys apply to the commands that listen — `tui`, `cli`, `dictate` — plus the two that
+describe them: `tune`, which measures the stack the others run, and `cadence`, which
+prints what a schedule costs. Both were left out at first and both were wrong for it:
+`tune` benchmarked stock torch while the config pointed every real command at a quantised
+MLX checkpoint, and `lt cadence` confidently simulated the shipped schedule rather than
+the configured one.
+
+Everything else takes a table named after the command, because the same flag name doesn't
+mean the same thing everywhere: `--threshold` is an RMS gate to a session and a cosine
+distance to `diarize`, and a bare key that reached both would collapse every speaker into
+one.
 
 Keys are checked against the real CLI, not a list kept in parallel with it. So either
 spelling resolves — `max-gap` as `--help` prints it, `max_gap` as the parameter is named,
