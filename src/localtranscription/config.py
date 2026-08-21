@@ -8,10 +8,11 @@ but by construction, because this feeds Click's `default_map` and the layering h
 inside the parser. There is no per-flag plumbing to forget and no "was this passed?"
 sentinel to get wrong, which is the failure mode of every hand-rolled version of this.
 
-Bare keys apply to the commands that listen -- `tui`, `cli`, `dictate`. Anything else
-takes a table named after the command, because the same flag name does not mean the same
-thing everywhere: `--threshold` is an RMS gate to a session and a cosine distance to
-`diarize`, and a bare key that reached both would quietly ruin one of them.
+Bare keys apply to the commands that listen -- `tui`, `cli`, `dictate`, and `tune`, which
+has to measure the stack the other three will actually run. Anything else takes a table
+named after the command, because the same flag name does not mean the same thing
+everywhere: `--threshold` is an RMS gate to a session and a cosine distance to `diarize`,
+and a bare key that reached both would quietly ruin one of them.
 
     backend = "mlx"
     model = "qwen3-asr-1.7b-q8g64"
@@ -31,21 +32,25 @@ from __future__ import annotations
 
 import difflib
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any
 
 from . import paths
 
-#: Which commands a bare key applies to. The ones that open a session and share an
-#: option vocabulary; see the module docstring for why this isn't "all of them".
-SESSION = ("tui", "cli", "dictate")
+#: Which commands a bare key applies to: the ones that open a session and share an option
+#: vocabulary, plus `tune`, which exists to measure them. Leaving tune out meant it
+#: benchmarked stock torch against the upstream weights while the config pointed every
+#: real command at a quantised MLX checkpoint -- and then recommended a profile from it.
+#: See the module docstring for why this isn't "all of them".
+SESSION = ("tui", "cli", "dictate", "tune")
 
 TEMPLATE = '''\
 # localtranscription -- defaults for the flags you'd otherwise type every time.
 # A flag on the command line still beats anything in here.
 #
-# Bare keys below apply to `lt tui`, `lt cli` and `lt dictate`. Every other command
-# takes a table. TOML rule worth knowing: bare keys must come before the first
+# Bare keys below apply to `lt tui`, `lt cli`, `lt dictate` and `lt tune`. Every other
+# command takes a table. TOML rule worth knowing: bare keys must come before the first
 # [table] or they land inside it.
 
 # backend = "mlx"                   # torch | mlx            (`lt backends`)
@@ -74,7 +79,7 @@ class ConfigError(Exception):
     """A config file that exists but can't be honoured. Always names the file."""
 
 
-def locate(explicit: Optional[Path] = None) -> Optional[Path]:
+def locate(explicit: Path | None = None) -> Path | None:
     """The config file to read, or None if there is none.
 
     A `--config` that doesn't exist is an error, not a fallback: it was named. A missing

@@ -1,10 +1,11 @@
 """CPU-only tests: VAD, cadence, recorder. No model, no GPU."""
 
 import inspect
+import itertools
 import json
 import os
-import time
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +13,7 @@ import pytest
 
 from localtranscription import config as cfgfile
 from localtranscription.backends import Backend, Transcription, Word
-from localtranscription.formats import words_to_srt, write_outputs
+from localtranscription.formats import write_outputs
 from localtranscription.recorder import SessionRecorder, load_manifest
 from localtranscription.vad import FRAME_LEN, SAMPLE_RATE, Cadence, segment_utterances
 
@@ -116,7 +117,7 @@ def test_cadence_growth_one_is_fixed_spacing():
 
 def test_cadence_max_gap_caps_long_utterances():
     pts = Cadence(first=0.4, growth=1.6, max_gap=3.0).schedule(40)
-    gaps = [b - a for a, b in zip(pts, pts[1:])]
+    gaps = [b - a for a, b in itertools.pairwise(pts)]
     assert max(gaps) <= 3.0 + 1e-9, f"gap exceeded max_gap: {max(gaps)}"
 
 
@@ -225,7 +226,7 @@ def test_interims_isolated_per_utterance(tmp_path):
 def test_write_outputs_produces_four_files(tmp_path):
     words = [{"text": "hello", "start": 0.0, "end": 0.5},
              {"text": "world", "start": 0.5, "end": 1.0}]
-    base = write_outputs(tmp_path, [(0.0, "hello world")], words, stem="t")
+    write_outputs(tmp_path, [(0.0, "hello world")], words, stem="t")
     for ext in ("txt", "words.json", "srt", "timestamped.md"):
         p = tmp_path / f"t.{ext}"
         assert p.exists() and p.stat().st_size > 0
@@ -279,6 +280,7 @@ def test_close_without_drain_drops_partials_but_keeps_finals():
 def test_close_gives_up_on_wedged_inference():
     """A stuck inference must not hold the process open."""
     import time as _t
+
     from localtranscription.engine import Transcriber
     from localtranscription.vad import Chunk
 
@@ -421,7 +423,8 @@ def test_ctrl_c_during_model_load_exits_immediately(tmp_path):
     """))
 
     t0 = _t.monotonic()
-    proc = subprocess.run([sys.executable, str(child)], capture_output=True, timeout=30)
+    proc = subprocess.run([sys.executable, str(child)], capture_output=True,
+                          timeout=30, check=False)
     elapsed = _t.monotonic() - t0
 
     assert elapsed < 10, f"exit took {elapsed:.1f}s; atexit is blocking"
@@ -478,7 +481,7 @@ def test_unknown_backend_is_rejected_with_a_useful_message():
 
 def test_missing_mlx_dependency_explains_the_fix():
     """The mlx package isn't installed here; the failure must be actionable."""
-    from localtranscription.backends import MlxBackend, BackendUnavailable, available
+    from localtranscription.backends import BackendUnavailable, MlxBackend, available
 
     if available("mlx"):
         pytest.skip("mlx-qwen3-asr is installed")
@@ -497,7 +500,7 @@ def test_mlx_adapter_passes_dtype_and_aligner_in_the_shapes_the_library_wants(mo
       Passing None or a str would rebuild a 0.6B aligner on every single call.
     """
     pytest.importorskip("mlx_qwen3_asr")
-    import mlx.core as mx
+    import mlx.core as mx  # ty: ignore[unresolved-import]
     import mlx_qwen3_asr as m
 
     from localtranscription.backends import MlxBackend
@@ -567,7 +570,7 @@ def test_mlx_quantize_supports_the_modes_we_offer():
     mx = pytest.importorskip("mlx.core")
     import inspect
 
-    import mlx.nn as nn
+    from mlx import nn
 
     from localtranscription.quantize import MODES
 
@@ -723,14 +726,15 @@ def _speech_frames(voiced_frames: int, tail: int = 40):
 
 def test_incremental_partials_do_not_resend_the_prefix():
     """The whole point: partial audio should sum to the utterance, not to n^2/2c."""
-    from localtranscription.vad import Cadence, SAMPLE_RATE, segment_utterances
+    from localtranscription.vad import SAMPLE_RATE, Cadence, segment_utterances
 
     frames = _speech_frames(400)
-    whole = [c for c in segment_utterances(iter(frames), 0.1, cadence=Cadence())]
-    delta = [c for c in segment_utterances(iter(frames), 0.1, cadence=Cadence(),
-                                           incremental=True)]
+    whole = list(segment_utterances(iter(frames), 0.1, cadence=Cadence()))
+    delta = list(segment_utterances(iter(frames), 0.1, cadence=Cadence(),
+                                    incremental=True))
 
-    partial_audio = lambda cs: sum(len(c.audio) for c in cs if not c.final) / SAMPLE_RATE
+    def partial_audio(cs):
+        return sum(len(c.audio) for c in cs if not c.final) / SAMPLE_RATE
     final = next(c for c in delta if c.final)
     assert partial_audio(delta) <= len(final.audio) / SAMPLE_RATE + 0.1, \
         "incremental partials should never exceed the utterance's own length"
@@ -748,7 +752,7 @@ def test_incremental_partials_are_flagged():
 
 def test_final_chunk_still_carries_the_whole_utterance():
     """Finals run the aligner and get saved, so they must never be a delta."""
-    from localtranscription.vad import Cadence, SAMPLE_RATE, segment_utterances
+    from localtranscription.vad import Cadence, segment_utterances
 
     whole = [c for c in segment_utterances(iter(_speech_frames(400)), 0.1, cadence=Cadence())
              if c.final]
@@ -916,8 +920,8 @@ def _dictate(tmp_path, spec, *args):
     # XDG_CONFIG_HOME at a scratch dir: the child would otherwise read the developer's
     # own config.toml, whose whole purpose is to change what `lt dictate` does.
     env = {**os.environ, "XDG_CONFIG_HOME": str(tmp_path / "config")}
-    return subprocess.run([sys.executable, str(child)], capture_output=True, timeout=180,
-                          env=env)
+    return subprocess.run([sys.executable, str(child)], capture_output=True,
+                          timeout=180, env=env, check=False)
 
 
 def test_dictate_puts_only_the_text_on_stdout(tmp_path):
@@ -969,7 +973,7 @@ def test_dictate_events_carry_what_a_meter_needs(tmp_path):
     levels = [e for e in events if e["event"] == "level"]
     assert len(levels) > 30 and all("rms" in e and "speech" in e for e in levels)
     assert any(e["speech"] for e in levels)
-    assert [e for e in events if e["event"] == "final"][0]["text"] == "hello there"
+    assert next(e for e in events if e["event"] == "final")["text"] == "hello there"
 
 
 def test_dictate_hold_keeps_going_through_pauses(tmp_path):
@@ -986,10 +990,9 @@ def test_dictate_hold_keeps_going_through_pauses(tmp_path):
     assert stops.stdout == b"hello there"
     assert holds.stdout == b"hello there hello there"
 
-    finals = lambda p: sum(  # noqa: E731
-        json.loads(line)["event"] == "final"
-        for line in p.stderr.splitlines() if line.strip()
-    )
+    def finals(p):
+        return sum(json.loads(line)["event"] == "final"
+                   for line in p.stderr.splitlines() if line.strip())
     assert finals(stops) == 1
     assert finals(holds) == 2
 
@@ -1014,7 +1017,10 @@ def _map(text):
 
 def test_bare_keys_reach_every_command_that_listens():
     m = _map('backend = "mlx"\nlanguage = "Greek"\n')
-    assert set(m) == {"tui", "cli", "dictate"}
+    # `tune` is in this set because it exists to measure the other three: left out, it
+    # benchmarked stock torch while the config pointed every real command at a quantised
+    # MLX checkpoint, and then recommended a cadence from those numbers.
+    assert set(m) == {"tui", "cli", "dictate", "tune"}
     assert all(v == {"backend": "mlx", "language": "Greek"} for v in m.values())
 
 
@@ -1223,3 +1229,122 @@ def test_drafted_decode_upstream_symbols_still_exist():
     assert not missing, (
         f"mlx_qwen3_asr no longer exports {missing}; backends._MlxDraftDecoder needs them."
     )
+
+
+# ------------------------------------------------------------------ lt tune
+
+
+def test_voiced_frames_are_not_clip_length():
+    """The gate counts loud frames, and a clip is mostly not loud.
+
+    Pre-roll and the trailing tail are part of every clip and part of none of this
+    measurement -- which is exactly why a length-based gate would pass a cough.
+    """
+    from localtranscription import tune as tn
+
+    audio = np.concatenate(frames([(False, 0.3), (True, 0.2), (False, 0.5)]))
+    voiced = tn.count_voiced(audio, 0.01)
+    assert 5 <= voiced <= 8, voiced          # ~0.2s of speech, not the 1.0s clip
+    assert tn.count_voiced(audio, 10.0) == 0  # nothing clears an absurd threshold
+    assert tn.count_voiced(np.zeros(10, dtype=np.float32), 0.01) == 0
+
+
+def test_min_speech_sits_under_your_shortest_word():
+    """Tuning must never make a machine deafer to short words than an untuned one."""
+    from localtranscription import tune as tn
+    from localtranscription.vad import MIN_SPEECH_SEC
+
+    def sample(voiced_sec):
+        return tn.Sample("", np.zeros(16, dtype=np.float32),
+                         int(voiced_sec * SAMPLE_RATE / FRAME_LEN))
+
+    got = tn.suggest_min_speech([sample(0.2), sample(0.9)])
+    assert 0.05 <= got < 0.2, got
+    # A speaker who never says anything short still gets the shipped default, not a
+    # gate raised above it.
+    assert tn.suggest_min_speech([sample(2.0)]) == MIN_SPEECH_SEC
+    assert tn.suggest_min_speech([]) == MIN_SPEECH_SEC
+    # And a floor, because the gate is still what keeps key clicks out of the model.
+    assert tn.suggest_min_speech([sample(0.01)]) >= 0.05
+
+
+def test_cost_model_separates_fixed_from_proportional():
+    from localtranscription import tune as tn
+
+    model = tn.fit([(2.0, 0.20), (4.0, 0.30), (8.0, 0.50)])  # 0.1 + 0.05x
+    assert model.fixed == pytest.approx(0.1, abs=0.01)
+    assert model.per_sec == pytest.approx(0.05, abs=0.01)
+    assert model.at(20.0) == pytest.approx(1.1, abs=0.02)
+
+
+def test_cost_model_survives_a_degenerate_run():
+    """One measurement should give a worse model, not a traceback."""
+    from localtranscription import tune as tn
+
+    assert tn.fit([]).at(5.0) == 0.0
+    flat = tn.fit([(3.0, 0.4)])
+    assert flat.at(1.0) == flat.at(30.0) == pytest.approx(0.4)
+    same_x = tn.fit([(3.0, 0.4), (3.0, 0.6)])
+    assert same_x.at(10.0) == pytest.approx(0.5)
+
+
+def test_a_tighter_profile_is_fresher_and_costs_more():
+    from localtranscription import tune as tn
+
+    cheap = tn.CostModel(0.02, 0.01)
+    got = [tn.evaluate(p, cheap, cheap, 20.0) for p in tn.PROFILES]
+    assert [v.profile.name for v in got] == ["relaxed", "snappy", "aggressive"]
+    assert got[0].partials < got[1].partials < got[2].partials
+    assert got[0].stale_max > got[1].stale_max > got[2].stale_max
+    assert got[0].compute < got[1].compute < got[2].compute
+
+
+def test_recommendation_prefers_a_profile_that_survives_losing_drafting():
+    """The guard switches drafting off on unstable audio, and a profile that only fits
+    with it doesn't degrade -- it stops keeping up and the text stops moving."""
+    from localtranscription import tune as tn
+
+    # Drafted cost fits everything; undrafted only fits the relaxed schedule
+    # (0.30x against snappy's 0.85x and aggressive's 1.57x).
+    drafted, full = tn.CostModel(0.01, 0.004), tn.CostModel(0.08, 0.08)
+    verdicts = [tn.evaluate(p, drafted, full, 20.0) for p in tn.PROFILES]
+    assert all(v.load <= tn.SUSTAINABLE for v in verdicts), "all affordable when drafted"
+    assert tn.recommend(verdicts).profile.name == "relaxed"
+
+    # When everything degrades gracefully, take the freshest.
+    verdicts = [tn.evaluate(p, drafted, drafted, 20.0) for p in tn.PROFILES]
+    assert tn.recommend(verdicts).profile.name == "aggressive"
+
+
+def test_recommendation_never_returns_nothing():
+    """A machine that cannot keep up with any profile still needs an answer."""
+    from localtranscription import tune as tn
+
+    hopeless = tn.CostModel(5.0, 5.0)
+    got = tn.recommend([tn.evaluate(p, hopeless, hopeless, 20.0) for p in tn.PROFILES])
+    assert got.profile.name == "relaxed", "the cheapest is the least bad"
+
+
+def test_tuned_config_is_valid_and_says_what_it_set():
+    """`lt tune --write` writes something `lt config` can read back."""
+    import tomllib
+
+    from localtranscription import tune as tn
+
+    text = tn.render(backend="mlx", model="q8", aligner="al", min_speech=0.12,
+                     profile=tn.PROFILES[1], drafting=True, note="M3 Max")
+    data = tomllib.loads(text)
+    assert data["backend"] == "mlx" and data["min-speech"] == 0.12
+    assert data["x-partial-draft"] is True
+    assert data["tui"] == {"interim": 0.15, "growth": 1.25, "max-gap": 1.2}
+    # And it round-trips through the real validator, against the real CLI.
+    assert _map(text)["tui"]["backend"] == "mlx"
+
+
+def test_bench_lengths_span_the_schedule():
+    from localtranscription import tune as tn
+
+    got = tn.bench_lengths(30.0)
+    assert got[0] < 1.0 and got[-1] == 30.0
+    assert all(b > a for a, b in itertools.pairwise(got)), got
+    assert tn.bench_lengths(0.8)[-1] == 0.8
