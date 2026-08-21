@@ -637,7 +637,7 @@ def dictate(
     events: bool = EVENTS, interim: float = DICT_FIRST, hold: bool = HOLD,
     record: bool = DICT_REC, record_dir: Path = RECDIR, backend: str = BACKEND,
     model: str = MODEL, dtype: str = DTYPE, device: str = DEVICE,
-    min_speech: float = MINSPEECH,
+    min_speech: float = MINSPEECH, x_partial_draft: bool = XDRAFT,
 ):
     """Speech to stdout, then exit. [dim]A surface to compose on.[/]
 
@@ -673,7 +673,7 @@ def dictate(
         threshold=threshold, first=interim, growth=1.6, max_gap=3.0,
         record=record, record_dir=record_dir, backend=backend, model=model,
         aligner=DEFAULT_ALIGNER, dtype=dtype, partials="reencode", stream_chunk=2.0,
-        min_speech=min_speech,
+        min_speech=min_speech, x_partial_draft=x_partial_draft,
     )
     # Dictation wants a string, not a transcript. This is what skips loading the 0.6B
     # aligner as well as running it -- see load_backend(align=...).
