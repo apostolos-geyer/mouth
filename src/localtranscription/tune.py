@@ -63,7 +63,9 @@ def machine() -> Machine:
     return Machine(
         chip=chip or "unknown",
         cores=os.cpu_count() or 0,
-        memory_gb=round(int(mem) / 1e9, 1) if mem.isdigit() else 0.0,
+        # GiB, not GB: a 128 GB machine reports 137438953472 bytes, and printing
+        # "137.4 GB" back at its owner reads as a bug in the tool.
+        memory_gb=round(int(mem) / (1024**3), 1) if mem.isdigit() else 0.0,
         platform=platform.system(),
     )
 
@@ -164,26 +166,26 @@ def fit(points: list[tuple[float, float]]) -> CostModel:
 
 @dataclass
 class Profile:
+    """A choice about how often text should appear, in words a user can weigh.
+
+    `blurb` describes the experience and nothing else. It deliberately says nothing
+    about whether the machine can afford it -- that answer is measured, differs between
+    machines, and an earlier version of this hard-coded one machine's answer into the
+    description of the option.
+    """
+
     name: str
     cadence: Cadence
     blurb: str
 
 
 PROFILES = [
+    Profile("calm", Cadence(0.4, 1.6, 3.0), "text catches up in comfortable chunks"),
     Profile(
-        "relaxed",
-        Cadence(0.4, 1.6, 3.0),
-        "the shipped default: fewest passes, stalest text",
+        "balanced", Cadence(0.15, 1.25, 1.2), "text follows along a sentence at a time"
     ),
     Profile(
-        "snappy",
-        Cadence(0.15, 1.25, 1.2),
-        "text on screen stays close; keeps up even if drafting stops paying",
-    ),
-    Profile(
-        "aggressive",
-        Cadence(0.15, 1.15, 0.6),
-        "freshest text; needs drafting to be affordable at all",
+        "instant", Cadence(0.15, 1.15, 0.6), "text chases your voice as closely as it can"
     ),
 ]
 
@@ -209,6 +211,17 @@ class Verdict:
     @property
     def load_full(self) -> float:
         return self.compute_full / self.length if self.length else 0.0
+
+    @property
+    def headroom(self) -> str:
+        """How hard this works the machine, for someone who will never read a ratio."""
+        if self.load > 1.0:
+            return "too much"
+        if self.load > SUSTAINABLE:
+            return "strained"
+        if self.load > 0.4:
+            return "works for it"
+        return "easy"
 
     @property
     def safe_without_drafting(self) -> bool:

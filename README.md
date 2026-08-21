@@ -51,6 +51,7 @@ lt quantize               # build a quantised checkpoint (the big perf win)
 lt diarize FILE           # who spoke when, offline
 lt paths                  # where config, transcripts and checkpoints live
 lt config                 # defaults for the flags you always pass
+lt tune                   # set it up for your machine and your voice
 lt cadence 10             # what the partial schedule costs on a 10s utterance
 
 lt tui -l Greek -m 2      # language + mic index
@@ -65,6 +66,24 @@ First run downloads ~5GB of weights. After that the model loads in about 5s.
 `--language` is a hint, not a hard constraint — speaking Greek with the English default
 still produces Greek, but inconsistently, romanizing the same phrase on one pass and not
 the next. Setting it properly is worth it.
+
+## Setup
+
+```sh
+lt tune                   # say a few things; it measures and writes your config
+lt tune --wav clip.flac   # measure against a recording instead
+```
+
+Asks you to say a few things, times how fast this machine transcribes them, and offers a
+choice about how quickly text should appear while you talk. Everything it suggests is
+measured on the spot: `--min-speech` comes from the shortest phrase you actually said,
+and each option is marked with what it would cost *here*.
+
+That last part matters more than it sounds. Whether the fastest option is affordable is a
+property of your machine, not of the option — an early version wrote "needs the speed-up
+to be affordable at all" into the description of a profile, which baked one laptop's
+answer into every laptop's menu. The descriptions now say what the experience is; the
+verdict beside them is measured.
 
 ## Config
 

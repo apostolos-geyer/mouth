@@ -1350,7 +1350,7 @@ def test_a_tighter_profile_is_fresher_and_costs_more():
 
     cheap = tn.CostModel(0.02, 0.01)
     got = [tn.evaluate(p, cheap, cheap, 20.0) for p in tn.PROFILES]
-    assert [v.profile.name for v in got] == ["relaxed", "snappy", "aggressive"]
+    assert [v.profile.name for v in got] == ["calm", "balanced", "instant"]
     assert got[0].partials < got[1].partials < got[2].partials
     assert got[0].stale_max > got[1].stale_max > got[2].stale_max
     assert got[0].compute < got[1].compute < got[2].compute
@@ -1366,11 +1366,11 @@ def test_recommendation_prefers_a_profile_that_survives_losing_drafting():
     drafted, full = tn.CostModel(0.01, 0.004), tn.CostModel(0.08, 0.08)
     verdicts = [tn.evaluate(p, drafted, full, 20.0) for p in tn.PROFILES]
     assert all(v.load <= tn.SUSTAINABLE for v in verdicts), "all affordable when drafted"
-    assert tn.recommend(verdicts).profile.name == "relaxed"
+    assert tn.recommend(verdicts).profile.name == "calm"
 
     # When everything degrades gracefully, take the freshest.
     verdicts = [tn.evaluate(p, drafted, drafted, 20.0) for p in tn.PROFILES]
-    assert tn.recommend(verdicts).profile.name == "aggressive"
+    assert tn.recommend(verdicts).profile.name == "instant"
 
 
 def test_recommendation_never_returns_nothing():
@@ -1379,7 +1379,7 @@ def test_recommendation_never_returns_nothing():
 
     hopeless = tn.CostModel(5.0, 5.0)
     got = tn.recommend([tn.evaluate(p, hopeless, hopeless, 20.0) for p in tn.PROFILES])
-    assert got.profile.name == "relaxed", "the cheapest is the least bad"
+    assert got.profile.name == "calm", "the cheapest is the least bad"
 
 
 def test_tuned_config_is_valid_and_says_what_it_set():
@@ -1412,3 +1412,26 @@ def test_bench_lengths_span_the_schedule():
     assert got[0] < 1.0 and got[-1] == 30.0
     assert all(b > a for a, b in itertools.pairwise(got)), got
     assert tn.bench_lengths(0.8)[-1] == 0.8
+
+
+def test_profile_descriptions_claim_nothing_about_this_machine():
+    """A blurb describes the experience; whether the machine can afford it is measured.
+
+    An earlier version said "needs drafting to be affordable at all" in the text of the
+    option itself, which hard-coded one machine's answer into every machine's menu.
+    """
+    from localtranscription import tune as tn
+
+    banned = ("draft", "machine", "afford", "keep up", "cheap", "fast", "slow")
+    for p in tn.PROFILES:
+        assert not any(w in p.blurb.lower() for w in banned), p
+        # And nothing a first-time user would have to look up.
+        assert not any(w in p.blurb.lower() for w in ("partial", "cadence", "decode")), p
+
+
+def test_effort_is_described_in_words():
+    from localtranscription import tune as tn
+
+    cheap, dear = tn.CostModel(0.001, 0.0005), tn.CostModel(2.0, 2.0)
+    assert tn.evaluate(tn.PROFILES[0], cheap, cheap, 20.0).headroom == "easy"
+    assert tn.evaluate(tn.PROFILES[2], dear, dear, 20.0).headroom == "too much"

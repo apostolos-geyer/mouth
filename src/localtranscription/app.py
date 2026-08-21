@@ -30,6 +30,7 @@ from .backends import (
     load_backend,
     local_checkpoints,
     open_partial_draft,
+    resolve_checkpoint,
 )
 from .diarize.offline import OfflineConfig
 from .sources import cached_threshold, remember_threshold
@@ -39,7 +40,6 @@ from .sources import cached_threshold, remember_threshold
 # config's 0.65, and because the flag always wins, the documented value was dead
 # everywhere except the tests.
 _DIA = OfflineConfig()
-from .audio import load as _load_audio
 from .engine import LANGUAGES, Config, run_session
 from .formats import fmt_clock, write_outputs
 from .vad import MAX_UTTERANCE_SEC, MIN_SPEECH_SEC, Cadence
@@ -623,9 +623,9 @@ def tune(
         False,
         "--write",
         "-w",
-        help="Write the tuned config [dim](keeps the old one as config.toml.bak)[/].",
+        help="Save the result without asking [dim](keeps a .bak of the old config)[/].",
     ),
-    phrases: int = typer.Option(3, "--phrases", help="How many utterances to record."),
+    phrases: int = typer.Option(3, "--phrases", help="How many things to say."),
     mic: int | None = MIC,
     backend: str = BACKEND,
     model: str = MODEL,
@@ -633,14 +633,16 @@ def tune(
     dtype: str = DTYPE,
     language: str = LANG,
 ):
-    """Measure this machine and this voice, then pick settings from the numbers.
+    """Set this up for your machine and your voice.
 
-    Records a few phrases, times what a partial costs at a range of prefix lengths, and
-    plays each cadence profile out over an utterance to see what it would cost and how
-    stale the text on screen would get. Nothing here is a guess: [b]--min-speech[/b] comes
-    from the shortest phrase you actually said, and the profile comes from what this
-    machine measurably keeps up with.
+    Asks you to say a few things, times how fast your machine transcribes them, and
+    offers you a choice about how quickly text should appear while you talk. Everything
+    it suggests is measured here, not copied from a table.
     """
+    from rich.panel import Panel
+    from rich.prompt import Prompt
+    from rich.table import Table
+
     from . import tune as tn
 
     cfg = _config(
@@ -664,105 +666,194 @@ def tune(
     )
     cfg.timestamps = False
 
+    console.print()
+    console.print(
+        Panel.fit("[b]Setting up for your machine and your voice[/]", border_style="cyan")
+    )
+
+    # ------------------------------------------------------------------ 1. machine
     box = tn.machine()
-    console.print(f"[b]machine[/]  {box.chip}", highlight=False)
-    console.print(f"         {box.cores} cores · {box.memory_gb:g} GB · {box.platform}")
+    kit = Table.grid(padding=(0, 2))
+    kit.add_column(style="dim", justify="right")
+    kit.add_column()
+    kit.add_row("computer", f"{box.chip}  ·  {box.memory_gb:g} GB")
+    # Resolve first: a bare name like "qwen3-asr-1.7b-q8g64" is not a path, and
+    # describe_checkpoint reads the config.json inside the directory.
+    quant = describe_checkpoint(resolve_checkpoint(cfg.model))
+    kit.add_row(
+        "speech model",
+        f"{Path(cfg.model).name}" + (f"  [dim]({quant})[/]" if quant else ""),
+    )
+    console.print("\n[b]1 · What you're running on[/]\n")
+    console.print(kit)
     if box.apple_silicon and backend != "mlx":
         console.print(
-            "[yellow]         apple silicon: --backend mlx is 2.2x torch "
-            "on a quantised checkpoint[/]"
+            "\n  [yellow]This Mac can run about twice as fast on a converted "
+            "model.[/]\n  [dim]See `lt quantize`.[/]"
         )
 
-    found = local_checkpoints()
-    quant = describe_checkpoint(cfg.model)
+    # ------------------------------------------------------------------ 2. listen
+    console.print("\n[b]2 · Your voice[/]\n")
+    samples, _ = _tune_listen(wav, mic, phrases)
+    if not samples:
+        raise typer.BadParameter("Nothing was recorded. Try again and speak up.")
+
+    shortest = min(samples, key=lambda s: s.voiced_sec)
+    min_speech = tn.suggest_min_speech(samples)
+    missed = shortest.voiced_sec < MIN_SPEECH_SEC
     console.print(
-        f"\n[b]checkpoints[/]  {len(found)} local · using "
-        f"[cyan]{Path(cfg.model).name}[/] [dim]{quant or 'unquantised'}[/]"
+        f"\n  The shortest thing you said lasted [b]{shortest.voiced_sec:.2f} seconds[/]."
     )
-    if not found:
+    console.print(
+        "  [green]It will now pick up words that short.[/]"
+        + (
+            f"\n  [dim]Out of the box it needs {MIN_SPEECH_SEC:g}s and would have missed "
+            f"that one.[/]"
+            if missed
+            else "\n  [dim]That already clears the standard setting.[/]"
+        )
+    )
+
+    # ------------------------------------------------------------------ 3. measure
+    console.print("\n[b]3 · How fast this machine transcribes[/]\n")
+    t0 = time.monotonic()
+    backend_obj = _load(cfg)
+    console.print(f"  [dim]model ready in {time.monotonic() - t0:.1f}s[/]")
+    drafted, full, drafting = _tune_measure(tn, cfg, backend_obj, samples)
+
+    # ------------------------------------------------------------------ 4. choose
+    REF = 20.0
+    verdicts = [tn.evaluate(p, drafted, full, REF) for p in tn.PROFILES]
+    best = tn.recommend(verdicts)
+
+    table = Table(header_style="dim", box=None, padding=(0, 3), pad_edge=False)
+    table.add_column(" ", no_wrap=True)
+    table.add_column("option", style="cyan", no_wrap=True)
+    table.add_column("text updates", no_wrap=True)
+    table.add_column("lags you by", no_wrap=True)
+    table.add_column("effort", no_wrap=True)
+    for v in verdicts:
+        pick = "[green]★[/]" if v is best else " "
+        strain = {
+            "easy": "[green]easy[/]",
+            "works for it": "some",
+            "strained": "[yellow]hard[/]",
+            "too much": "[red]can't keep up[/]",
+        }[v.headroom]
+        table.add_row(
+            pick,
+            v.profile.name,
+            f"every {v.profile.cadence.max_gap:g}s",
+            f"up to {v.stale_max:.1f}s",
+            strain,
+        )
+    console.print("\n[b]4 · How quickly should text appear while you talk?[/]\n")
+    console.print(table)
+    console.print(f"\n  [green]★ {best.profile.name}[/] — {best.profile.blurb}.")
+    if drafting and not best.safe_without_drafting:
         console.print(
-            "[dim]         none built. `lt quantize` is the single biggest "
-            "lever on this machine.[/]"
+            "  [dim]Leans on a speed-up that noisy rooms can lose; if it ever "
+            "falls behind, pick the option above it.[/]"
         )
 
-    # ---------------------------------------------------------------- listen
-    samples: list[tn.Sample] = []
+    choice = best.profile
+    if not write:
+        names = [p.name for p in tn.PROFILES]
+        picked = Prompt.ask("\n  keep", choices=[*names, "quit"], default=best.profile.name)
+        if picked == "quit":
+            console.print("  [dim]nothing written[/]")
+            return
+        choice = next(p for p in tn.PROFILES if p.name == picked)
+
+    text = tn.render(
+        backend=cfg.backend,
+        model=model,
+        aligner=aligner,
+        min_speech=min_speech,
+        profile=choice,
+        drafting=drafting,
+        note=f"{box.chip} · measured {time.strftime('%Y-%m-%d')}",
+    )
+    dest = paths.config_file()
+    if dest.exists():
+        backup = dest.with_suffix(".toml.bak")
+        backup.write_text(dest.read_text())
+        console.print(f"  [dim]previous settings kept at {backup.name}[/]")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(text)
+    console.print(f"\n  [green]Saved.[/] [dim]{dest}[/]")
+    console.print("  [dim]Run `lt tui` to use it, or `lt config` to see it.[/]\n")
+
+
+def _tune_listen(wav: Path | None, mic: int | None, phrases: int):
+    """Collect a few utterances, from the microphone or a recording.
+
+    Split out so the command above reads as the five steps a person goes through, and so
+    the microphone half is one function rather than a branch inside a long body.
+    """
+    import threading
+
+    from . import tune as tn
+    from .sources import make_source
+    from .vad import segment_utterances
+
     if wav is not None:
-        # Cut it into utterances rather than treating the file as one: the gate below is
-        # about how short a single phrase is, and a whole recording is not a phrase.
-        import threading
-
-        from .sources import make_source
-        from .vad import segment_utterances
-
-        audio = _load_audio(wav)
         src = make_source(None, wav).open()
         threshold = src.calibrate(1.0)
         stop = threading.Event()
-        samples = [
+        got = [
             tn.Sample("", c.audio, tn.count_voiced(c.audio, threshold))
             for c in segment_utterances(src.frames(stop), threshold, min_speech=0.0)
             if c.final
         ]
         src.close()
-        console.print(
-            f"\n[b]audio[/]  {wav.name} · {len(audio) / 16000:.1f}s · "
-            f"{len(samples)} utterances · threshold {threshold:.5f}"
-        )
-    else:
-        from .sources import make_source
+        console.print(f"  [dim]{wav.name} · {len(got)} phrases[/]")
+        return got, threshold
 
-        source = make_source(mic, None).open()
-        try:
-            with console.status("[dim]measuring the room, stay quiet…[/]"):
-                threshold = source.calibrate(1.0)
-            console.print(f"\n[b]room[/]  VAD threshold {threshold:.5f}")
+    ASKS = [
+        'a single short word — your name, or "okay"',
+        "a whole sentence, the way you'd normally talk",
+        "one more sentence, a longer one",
+    ]
+    src = make_source(mic, None).open()
+    out = []
+    try:
+        with console.status("[dim]listening to the room, stay quiet for a second…[/]"):
+            threshold = src.calibrate(1.0)
+        for i in range(phrases):
+            ask = ASKS[i] if i < len(ASKS) else "anything else"
+            console.print(f"  [cyan]{i + 1}.[/] Say {ask}. [dim]listening…[/]", end="\r")
+            heard = tn.capture(src, threshold)
+            if heard is None:
+                console.print(f"  [yellow]{i + 1}. didn't catch that[/]{' ' * 40}")
+                continue
+            out.append(heard)
             console.print(
-                "[dim]Say a few things — one short word, then a sentence or "
-                "two. Pause between them.[/]"
+                f"  [green]{i + 1}. got it[/] [dim]({heard.seconds:.1f}s)[/]{' ' * 40}"
             )
-            for i in range(phrases):
-                console.print(f"  [cyan]{i + 1}/{phrases}[/] listening…", end="\r")
-                got = tn.capture(source, threshold)
-                if got is None:
-                    console.print(f"  [yellow]{i + 1}/{phrases} nothing heard[/]      ")
-                    continue
-                samples.append(got)
-                console.print(
-                    f"  [green]{i + 1}/{phrases}[/] {got.seconds:.2f}s · "
-                    f"{got.voiced_sec:.2f}s voiced          "
-                )
-        finally:
-            source.close()
+    finally:
+        src.close()
+    return out, threshold
 
-    if not samples:
-        raise typer.BadParameter("nothing recorded; run again and speak after the prompt.")
 
-    shortest = min(samples, key=lambda s: s.voiced_sec)
-    min_speech = tn.suggest_min_speech(samples)
-    console.print(
-        f"\n[b]gate[/]  shortest phrase carried [b]{shortest.voiced_sec:.2f}s[/] "
-        f"of voiced audio"
-    )
-    console.print(
-        f"        --min-speech [green]{min_speech:g}[/]  "
-        f"[dim](default {MIN_SPEECH_SEC:g} would "
-        f"{'have dropped it' if shortest.voiced_sec < MIN_SPEECH_SEC else 'keep it'})[/]"
-    )
-
-    # ---------------------------------------------------------------- measure
-    t0 = time.monotonic()
-    backend_obj = _load(cfg)
-    console.print(f"\n[b]load[/]  {time.monotonic() - t0:.1f}s")
+def _tune_measure(tn, cfg, backend_obj, samples):
+    """Time a transcription at a spread of lengths, with and without the speed-up."""
+    from rich.progress import BarColumn, Progress, TextColumn
 
     longest = max(samples, key=lambda s: s.seconds)
     lengths = tn.bench_lengths(longest.seconds)
     drafter = open_partial_draft(backend_obj, language=cfg.language)
     full_pts, draft_pts = [], []
-    with console.status("[dim]timing partials…[/]") as st:
+    with Progress(
+        TextColumn("  [dim]{task.description}[/]"),
+        BarColumn(bar_width=28),
+        TextColumn("[dim]{task.completed}/{task.total}[/]"),
+        console=console,
+        transient=True,
+    ) as bar:
+        job = bar.add_task("timing", total=len(lengths))
         for at in lengths:
             pcm = longest.audio[: int(at * 16000)]
-            st.update(f"[dim]timing partials at {at:g}s…[/]")
             t = time.monotonic()
             backend_obj.transcribe(pcm, 16000, language=cfg.language, timestamps=False)
             full_pts.append((at, time.monotonic() - t))
@@ -770,67 +861,20 @@ def tune(
                 t = time.monotonic()
                 drafter.transcribe(pcm, utterance=0.0)
                 draft_pts.append((at, time.monotonic() - t))
+            bar.advance(job)
     full = tn.fit(full_pts)
     drafted = tn.fit(draft_pts) if draft_pts else full
+    one_sec = full.at(1.0)
     console.print(
-        f"[b]partial[/]  {full.fixed * 1000:.0f}ms + "
-        f"{full.per_sec * 1000:.0f}ms per second of prefix",
-        highlight=False,
+        f"  A second of speech takes [b]{one_sec:.2f}s[/] to turn into text"
+        f"  [dim](about {1 / one_sec:.0f}x faster than real time)[/]"
     )
-    if draft_pts:
+    if draft_pts and full.at(10.0) > drafted.at(10.0) * 1.05:
         console.print(
-            f"[b]drafted[/]  {drafted.fixed * 1000:.0f}ms + "
-            f"{drafted.per_sec * 1000:.0f}ms  [dim]--x-partial-draft[/]",
-            highlight=False,
+            f"  [dim]An optional speed-up makes long sentences "
+            f"{full.at(10.0) / drafted.at(10.0):.1f}x cheaper here.[/]"
         )
-
-    # ---------------------------------------------------------------- choose
-    REF = 20.0
-    verdicts = [tn.evaluate(p, drafted, full, REF) for p in tn.PROFILES]
-    best = tn.recommend(verdicts)
-    console.print(
-        f"\n[b]profiles[/] [dim]on a {REF:g}s utterance — staleness is how far "
-        f"behind you the text on screen gets[/]\n"
-    )
-    console.print(f"  {'':<12}{'partials':>9}{'load':>8}{'stale avg':>11}{'stale max':>11}")
-    for v in verdicts:
-        mark = "[green]→[/]" if v is best else " "
-        warn = "" if v.load <= tn.SUSTAINABLE else "  [red]can't keep up[/]"
-        if not warn and not v.safe_without_drafting:
-            warn = "  [yellow]needs drafting[/]"
-        console.print(
-            f"{mark} [cyan]{v.profile.name:<11}[/]{v.partials:>8}"
-            f"{v.load:>8.2f}x{v.stale_avg:>10.2f}s{v.stale_max:>10.2f}s{warn}",
-            highlight=False,
-        )
-    console.print(f"\n[green]{best.profile.name}[/] — {best.profile.blurb}")
-    if draft_pts and best.speedup > 1.05:
-        console.print(
-            f"[dim]drafting makes it {best.speedup:.1f}x cheaper here "
-            f"({best.load_full:.2f}x without it).[/]"
-        )
-
-    text = tn.render(
-        backend=cfg.backend,
-        model=model,
-        aligner=aligner,
-        min_speech=min_speech,
-        profile=best.profile,
-        drafting=bool(draft_pts),
-        note=f"{box.chip} · measured {time.strftime('%Y-%m-%d')}",
-    )
-    dest = paths.config_file()
-    if not write:
-        console.print(f"\n[dim]--write saves this to {dest}[/]\n")
-        console.print(text, highlight=False, markup=False)
-        return
-    if dest.exists():
-        backup = dest.with_suffix(".toml.bak")
-        backup.write_text(dest.read_text())
-        console.print(f"\n[dim]previous config → {backup}[/]")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(text)
-    console.print(f"[green]wrote[/] {dest}")
+    return drafted, full, bool(draft_pts)
 
 
 @app.command()
