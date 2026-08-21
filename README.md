@@ -680,6 +680,32 @@ batched kernel rather than the accept logic.
 That is why this is partials-only. **Finals never take this path**: they run the aligner,
 they are what gets saved, and they stay on the library's own `transcribe()`.
 
+### Batching, and why finals aren't
+
+Batching is the obvious lever for `lt transcribe`, which produces a queue of finished
+utterances with nothing waiting on them. It does not pay, and the reason is upstream:
+`mlx_qwen3_asr.transcribe_batch` is `for index, audio in enumerate(audios)` — a
+convenience wrapper, not a batched forward pass. Measured over 12 real utterances
+(0.7–3.6s), with and without the aligner, at batch 4 and 12, sorted by length and not:
+
+```
+text only            sequential 1.39s   batched 1.39s   1.00x
+with timestamps      sequential 1.79s   batched 1.64s   1.09x
+```
+
+Noise, and sometimes worse — a mixed-length batch pads to its longest member. Real
+batching would mean driving prefill and decode across sequences directly, below
+`transcribe()`, with per-sequence EOS tracking and one KV cache each. That is a bigger
+job than the drafted decoder and it buys speed on a path already running at 17x realtime.
+
+Where batching *is* used, it was worth it and it's measured: the diarizer's segmentation
+runs batch-32 (2.1x over single dispatches, purely from amortising CoreML's per-call
+overhead), its embeddings go one dispatch per window across all local speakers, its
+pairwise distances are a matmul rather than a scalar loop (143x at two hours), and
+`--partials x-draft` verifies a 64-token draft in one `step_many` instead of 64 sequential
+steps (18.5x). The pattern holds: batching pays where it amortises a fixed per-call cost,
+and does nothing where the work is one autoregressive decode after another.
+
 ## Encoder + KV caching, and what's left
 
 `--partials stream` uses the decoder-side half of this. The notes below are why it
