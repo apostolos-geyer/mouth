@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import signal
 import sys
+import time
 import traceback
 from pathlib import Path
 from typing import Optional
@@ -26,6 +28,7 @@ from .backends import (
 )
 from . import paths
 from . import quantize as qz
+from .sources import cached_threshold, remember_threshold
 from .diarize.offline import OfflineConfig
 
 # Tuned clustering policy lives in OfflineConfig; the CLI mirrors its defaults rather
@@ -107,15 +110,25 @@ def _config(*, out, language, device, mic, wav, threshold, first, growth, max_ga
     )
 
 
-def _load(cfg: Config):
-    """Load the chosen backend behind a status spinner, failing with a usable message."""
+def _load(cfg: Config, out: Console = console, on_status=None):
+    """Load the chosen backend behind a status spinner, failing with a usable message.
+
+    on_status replaces the spinner rather than adding to it: a caller whose stderr carries
+    a machine-readable stream can't also have a spinner redrawing over it.
+    """
+    def go(status):
+        return load_backend(
+            cfg.backend, model=cfg.model, aligner=cfg.aligner,
+            device=cfg.device, dtype=cfg.dtype, on_status=status,
+            # No aligner load at all when nothing will ask for word timings.
+            align=cfg.timestamps,
+        )
+
     try:
-        with console.status("[dim]loading model…[/]") as st:
-            return load_backend(
-                cfg.backend, model=cfg.model, aligner=cfg.aligner,
-                device=cfg.device, dtype=cfg.dtype,
-                on_status=lambda m: st.update(f"[dim]{m}…[/]"),
-            )
+        if on_status is not None:
+            return go(on_status)
+        with out.status("[dim]loading model…[/]") as st:
+            return go(lambda m: st.update(f"[dim]{m}…[/]"))
     except BackendUnavailable as e:
         raise typer.BadParameter(str(e)) from e
 
@@ -427,6 +440,162 @@ def cli(
     with (live if show_interim else contextlib.nullcontext()):
         result = run_session(cfg, Hooks(), backend=backend_obj)
     _report(cfg, *result)
+
+
+# ------------------------------------------------------------------ dictate
+
+WAIT = typer.Option(8.0, "--wait",
+                    help="Give up if speech hasn't started within this many seconds "
+                         "[dim](0 = wait forever)[/].")
+EVENTS = typer.Option(False, "--events",
+                      help="Emit JSON lines on stderr: levels, state, text.")
+RECAL = typer.Option(False, "--recalibrate",
+                     help="Re-measure the room instead of reusing the cached threshold.")
+DICT_REC = typer.Option(False, "--record/--no-record",
+                        help="Save the utterance's audio + manifest.")
+DICT_FIRST = typer.Option(0.0, "--interim",
+                          help="Emit provisional text this many seconds in "
+                               "[dim](0 = off; only useful with --events)[/].")
+
+
+class _Events:
+    """JSON lines on stderr.
+
+    The split is the whole interface: **stdout is the transcript and nothing else**, so
+    `lt dictate | pbcopy` works with no flags, while anything that wants a level meter or
+    a state machine subscribes to stderr without disturbing that.
+    """
+
+    def __init__(self, on: bool):
+        self.on = on
+
+    def __call__(self, event: str, **fields):
+        if not self.on:
+            return
+        sys.stderr.write(json.dumps({"event": event, **fields}) + "\n")
+        sys.stderr.flush()
+
+
+@app.command()
+def dictate(
+    language: str = LANG, mic: Optional[int] = MIC, wav: Optional[Path] = WAV,
+    threshold: Optional[float] = THRESH, recalibrate: bool = RECAL, wait: float = WAIT,
+    events: bool = EVENTS, interim: float = DICT_FIRST, record: bool = DICT_REC,
+    record_dir: Path = RECDIR, backend: str = BACKEND, model: str = MODEL,
+    dtype: str = DTYPE, device: str = DEVICE,
+):
+    """One utterance to stdout, then exit. [dim]A surface to compose on.[/]
+
+    Talk; stop talking; the text is on stdout. Nothing else ever is — status goes to
+    stderr — so it pipes:
+
+        lt dictate | pbcopy
+        lt dictate | tee -a ~/notes.md
+
+    [b]SIGINT means "I stopped talking"[/], not "abort": the utterance in progress is
+    still transcribed and printed. That is what makes hold-to-talk work from any hotkey
+    manager with no daemon and no protocol — start it on key down, `kill -INT` it on key
+    up.
+
+    Exits 1 with nothing on stdout if nothing was heard, so `||` works.
+    """
+    err = Console(stderr=True)
+    emit = _Events(events)
+
+    cfg = _config(
+        out=paths.out_dir(), language=language, device=device, mic=mic, wav=wav,
+        threshold=threshold, first=interim, growth=1.6, max_gap=3.0,
+        record=record, record_dir=record_dir, backend=backend, model=model,
+        aligner=DEFAULT_ALIGNER, dtype=dtype, partials="reencode", stream_chunk=2.0,
+    )
+    # Dictation wants a string, not a transcript. This is what skips loading the 0.6B
+    # aligner as well as running it -- see load_backend(align=...).
+    cfg.timestamps = False
+    # One utterance is the entire result here, so it's worth waiting out. The session
+    # default assumes a lost final is one among many.
+    cfg.shutdown_timeout = 15.0
+
+    # A threshold describes a room and a microphone, and measuring one costs more than
+    # loading the model does -- which would make it the reason dictation felt slow.
+    # Never reuse one across --wav, whose "room" is a file.
+    if cfg.threshold is None and not recalibrate and wav is None:
+        cfg.threshold = cached_threshold(mic)
+    measuring = cfg.threshold is None
+
+    t0 = time.monotonic()
+    emit("loading", model=cfg.model, backend=cfg.backend)
+    backend_obj = _load(cfg, err, on_status=(lambda m: emit("loading", detail=m))
+                        if events else None)
+    load_took = time.monotonic() - t0
+
+    class Hooks:
+        def __init__(self):
+            self.stop = None
+            self.text = None
+            self.heard = False
+            self.deadline = None
+
+        def status(self, msg):
+            emit("status", detail=msg)
+
+        def ready(self, threshold):
+            if measuring and wav is None:
+                remember_threshold(mic, threshold)
+            self.deadline = time.monotonic() + wait if wait > 0 else None
+            emit("ready", threshold=round(threshold, 6), calibrated=measuring,
+                 load=round(load_took, 3))
+            if not events:
+                err.print(f"[b]Speak.[/] [dim](threshold {threshold:.5f}, "
+                          f"loaded in {load_took:.1f}s)[/]")
+
+        def bind_stop(self, stop):
+            self.stop = stop
+            # Flip the flag rather than raising: segment_utterances flushes whatever it
+            # was holding when the frames run out, so the utterance still lands.
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                signal.signal(sig, lambda *_: stop.set())
+
+        def level(self, rms, in_speech):
+            if in_speech and not self.heard:
+                self.heard = True
+                emit("speech")
+            emit("level", rms=round(rms, 5), speech=in_speech)
+            if not self.heard and self.deadline and time.monotonic() > self.deadline:
+                self.stop.set()
+
+        def interim(self, seg):
+            emit("partial", text=seg.text)
+
+        def segment(self, seg):
+            if self.text is not None:
+                return
+            self.text = seg.text
+            emit("final", text=seg.text, took=round(seg.took, 3),
+                 audio=round(seg.audio_sec, 3))
+            if not events:
+                err.print(f"[dim]{seg.took:.2f}s for {seg.audio_sec:.1f}s of audio[/]")
+            # One utterance is the whole job.
+            self.stop.set()
+
+        def error(self, offset, msg):
+            emit("error", message=msg)
+            if not events:
+                err.print(f"[red]transcribe failed: {msg}[/]")
+
+    hooks = Hooks()
+    run_session(cfg, hooks, backend=backend_obj)
+
+    text = (hooks.text or "").strip()
+    if not text:
+        emit("empty")
+        if not events:
+            err.print("[yellow]nothing heard[/]")
+        raise typer.Exit(1)
+
+    # No trailing newline when piped: the caller is pasting this into a text field, and a
+    # stray newline sends the message. A terminal still gets one so the prompt lands right.
+    sys.stdout.write(f"{text}\n" if sys.stdout.isatty() else text)
+    sys.stdout.flush()
 
 
 def main():

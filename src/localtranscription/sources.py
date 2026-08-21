@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import queue
 import threading
 import time
@@ -11,6 +12,7 @@ from typing import Iterator, Optional
 
 import numpy as np
 
+from . import paths
 from .audio import load as load_audio
 from .vad import FRAME_LEN, FRAME_MS, SAMPLE_RATE
 
@@ -25,6 +27,44 @@ def ambient_threshold(levels) -> float:
     if len(levels) == 0:
         return 0.01
     return max(3.0 * float(np.median(levels)), 0.005)
+
+
+def _mic_key(mic: Optional[int]) -> str:
+    return "default" if mic is None else str(mic)
+
+
+def cached_threshold(mic: Optional[int], path: Optional[Path] = None) -> Optional[float]:
+    """A threshold measured on a previous run, or None.
+
+    Keyed by device because thresholds describe a microphone in a room, not a machine --
+    a laptop mic and a desk condenser do not share one. Any unreadable or malformed file
+    reads as "no cached value": a stale cache must cost a calibration, never a crash.
+    """
+    path = path or paths.calibration_file()
+    try:
+        entry = json.loads(path.read_text())[_mic_key(mic)]
+        value = float(entry["threshold"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return value if value > 0 else None
+
+
+def remember_threshold(mic: Optional[int], value: float,
+                       path: Optional[Path] = None) -> None:
+    """Record a calibration for next time. Best-effort: never fails a session."""
+    path = path or paths.calibration_file()
+    try:
+        try:
+            table = json.loads(path.read_text())
+            if not isinstance(table, dict):
+                table = {}
+        except (OSError, ValueError):
+            table = {}
+        table[_mic_key(mic)] = {"threshold": round(value, 6), "at": time.time()}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(table, indent=2, sort_keys=True))
+    except OSError:
+        pass
 
 
 @dataclass

@@ -196,7 +196,8 @@ class TorchBackend:
     # is nothing to hook here. Partials re-transcribe the prefix on this backend.
     streaming = False
 
-    def __init__(self, model: str = DEFAULT_ASR, aligner: str = DEFAULT_ALIGNER,
+    def __init__(self, model: str = DEFAULT_ASR,
+                 aligner: Optional[str] = DEFAULT_ALIGNER,
                  device: str = "mps", dtype: str = "bf16", on_status=None):
         import torch
         from qwen_asr import Qwen3ASRModel
@@ -377,7 +378,8 @@ class MlxBackend:
     takes_device = False  # unified memory; there is no device to place anything on
     streaming = True
 
-    def __init__(self, model: str = DEFAULT_ASR, aligner: str = DEFAULT_ALIGNER,
+    def __init__(self, model: str = DEFAULT_ASR,
+                 aligner: Optional[str] = DEFAULT_ALIGNER,
                  dtype: str = "fp16", on_status=None):
         try:
             import mlx.core as mx
@@ -406,10 +408,19 @@ class MlxBackend:
         # _resolve_aligner() constructs a fresh ForcedAligner on every call -- reloading
         # 0.6B of weights per final. Passing an instance is the only branch that reuses it,
         # which is what their own CLI does.
-        say(f"loading {aligner} via mlx")
-        self._aligner = ForcedAligner(aligner, dtype=resolved)
+        self._aligner = None
+        if aligner is not None:
+            say(f"loading {aligner} via mlx")
+            self._aligner = ForcedAligner(aligner, dtype=resolved)
 
     def transcribe(self, audio, sample_rate, *, language, timestamps) -> Transcription:
+        if timestamps and self._aligner is None:
+            # Not a crash upstream, which is why it's worth catching here: mlx would take
+            # forced_aligner=None as "make one", and rebuild 0.6B of weights on every
+            # call. A silent 10x slowdown is worse than either a crash or a refusal.
+            raise BackendUnavailable(
+                "this backend was loaded with align=False; it cannot produce timestamps"
+            )
         r = self._session.transcribe(
             (audio, sample_rate),
             language=language,
@@ -474,14 +485,20 @@ def open_partial_stream(backend: Backend, *, language: str,
 def load_backend(name: str, *, model: Optional[str] = None,
                  aligner: Optional[str] = None, device: str = "mps",
                  dtype: Optional[str] = None, on_status=None,
-                 warmup: bool = True) -> Backend:
+                 warmup: bool = True, align: bool = True) -> Backend:
+    """Load a backend. align=False skips the forced aligner entirely.
+
+    Not the same as passing timestamps=False per call: the aligner is a second set of
+    weights, and a caller that will never ask for word timings should not pay to load
+    them. `lt dictate` is that caller -- it wants a string, not a transcript.
+    """
     if name not in BACKENDS:
         raise BackendUnavailable(
             f"unknown backend {name!r}; choose from {', '.join(BACKENDS)}"
         )
     cls = BACKENDS[name]
     model = resolve_checkpoint(model or DEFAULT_ASR)
-    aligner = resolve_checkpoint(aligner or DEFAULT_ALIGNER)
+    aligner = resolve_checkpoint(aligner or DEFAULT_ALIGNER) if align else None
     dtype = resolve_dtype(name, dtype)
 
     kwargs = {"model": model, "aligner": aligner, "dtype": dtype, "on_status": on_status}
@@ -492,8 +509,11 @@ def load_backend(name: str, *, model: Optional[str] = None,
     if warmup:
         say = on_status or (lambda m: None)
         say("warming up")
-        # First inference pays graph-compilation cost; eat it before capture starts.
+        # First inference pays graph-compilation cost; eat it before capture starts. Warm
+        # the path that will actually run: asking for timestamps here without an aligner
+        # raises, and warming the aligned path when nothing will use it is wasted load.
         backend.transcribe(
-            np.zeros(16000, dtype=np.float32), 16000, language="English", timestamps=True
+            np.zeros(16000, dtype=np.float32), 16000, language="English",
+            timestamps=align,
         )
     return backend

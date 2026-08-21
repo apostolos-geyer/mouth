@@ -52,3 +52,13 @@ def record_dir() -> Path:
 def models_dir() -> Path:
     """Where `lt quantize` writes, and where `lt models` looks."""
     return cache_dir() / "models"
+
+
+def calibration_file() -> Path:
+    """Remembered VAD thresholds, keyed by input device.
+
+    Cache, not data: it is a measurement of a room that `lt dictate --recalibrate`
+    retakes in a second. It lives here because a per-launch calibration costs more than
+    loading the model does, which is the whole reason dictation can start on a keypress.
+    """
+    return cache_dir() / "calibration.json"

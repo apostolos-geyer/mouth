@@ -82,6 +82,14 @@ class Config:
     partials: str = "reencode"
     stream_chunk_sec: float = 2.0
     session_id: str = ""
+    # Whether finals run the forced aligner. Off is for callers that want a string and
+    # not a transcript -- `lt dictate` -- and pairs with load_backend(align=False), which
+    # is what actually saves the load. Leaving this on with an unaligned backend raises.
+    timestamps: bool = True
+    # How long a deliberate stop waits on an in-flight final. The default suits a session
+    # front end, where quitting means quitting and one lost utterance sits among many.
+    # A single-utterance caller raises it: abandoning that final loses the whole result.
+    shutdown_timeout: float = SHUTDOWN_TIMEOUT
 
     def stamped(self) -> str:
         return self.session_id or f"session-{time.strftime('%Y%m%d-%H%M%S')}"
@@ -97,7 +105,8 @@ class Transcriber:
 
     def __init__(self, backend: Backend, language, on_segment=None, on_error=None,
                  on_interim=None, recorder: Optional[SessionRecorder] = None,
-                 stream=None):
+                 stream=None, timestamps: bool = True):
+        self.timestamps = timestamps
         self.backend = backend
         # An open PartialStream, or None to re-transcribe each prefix. Owned here because
         # it holds per-utterance decoder state that has to be dropped between utterances.
@@ -216,7 +225,7 @@ class Transcriber:
             SAMPLE_RATE,
             language=self.language,
             # Interim timestamps get discarded when the final lands, so skip the aligner.
-            timestamps=chunk.final,
+            timestamps=chunk.final and self.timestamps,
         )
         text = out.text.strip()
         if not text:
@@ -267,6 +276,7 @@ def run_session(cfg: Config, hooks, backend=None, stop: Optional[threading.Event
         device=cfg.device,
         dtype=cfg.dtype,
         on_status=hooks.status,
+        align=cfg.timestamps,
     )
     # The caller may own the event so quitting works before we ever get here -- otherwise
     # there's a window during load and calibration where nothing can stop the session.
@@ -293,6 +303,7 @@ def run_session(cfg: Config, hooks, backend=None, stop: Optional[threading.Event
         on_interim=getattr(hooks, "interim", None),
         recorder=recorder,
         stream=stream,
+        timestamps=cfg.timestamps,
     )
     worker.start()
     # Publish immediately: results accumulate on the worker, so a front end that quits
@@ -316,5 +327,5 @@ def run_session(cfg: Config, hooks, backend=None, stop: Optional[threading.Event
     finally:
         source.close()
         # Deliberate stop -> drop pending partials. Natural end (wav ran out) -> finish.
-        worker.close(drain=not stop.is_set(), timeout=SHUTDOWN_TIMEOUT)
+        worker.close(drain=not stop.is_set(), timeout=cfg.shutdown_timeout)
     return worker.segments, worker.words, recorder

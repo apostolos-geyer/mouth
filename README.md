@@ -15,6 +15,7 @@ uv run lt tui          # or: uv run localtranscription tui
 ```sh
 lt tui                    # full-screen live view (q quit · p pause · c clear)
 lt cli                    # streaming output to stdout
+lt dictate                # one utterance to stdout, then exit
 lt devices                # list microphones
 lt languages              # list supported ASR languages
 lt backends               # which inference backends are installed
@@ -27,6 +28,8 @@ lt cadence 10             # what the partial schedule costs on a 10s utterance
 lt tui -l Greek -m 2      # language + mic index
 lt cli --wav clip.m4a     # replay a file instead of the mic (any format, resampled)
 lt cli --no-record        # don't save audio
+
+lt dictate -b mlx -M qwen3-asr-1.7b-q8g64 | pbcopy    # same --backend/--model as anywhere
 ```
 
 First run downloads ~5GB of weights. After that the model loads in about 5s.
@@ -44,7 +47,7 @@ src/localtranscription/
   engine.py      model loading, inference worker, session driver
   backends.py    torch / mlx behind one transcribe() method
   quantize.py    build quantised MLX checkpoints (`lt quantize`)
-  sources.py     mic and wav frame sources
+  sources.py     mic and wav frame sources, and remembered VAD thresholds
   audio.py       decode wav/flac/m4a/mp3/mp4 to 16k mono
   recorder.py    per-utterance audio + manifest
   formats.py     txt / words.json / srt / timestamped.md / rttm
@@ -155,6 +158,105 @@ Measurement says otherwise: torch does **~10-15x realtime** for clips of 2s and 
 for 2s, 0.57s for 8s, 2.07s for 32s), so a 30s utterance's ~193s of scheduled audio is
 about 16s of compute — roughly half realtime, comfortable rather than marginal. The ~6x
 figure came from a single 3.2s clip where fixed per-call overhead dominates.
+
+## Dictation
+
+`lt tui` and `lt cli` are sessions. `lt dictate` is one utterance:
+
+```sh
+lt dictate | pbcopy                 # talk, stop talking, it's on the clipboard
+lt dictate | tee -a ~/notes.md
+lt dictate || say "nothing heard"
+```
+
+Talk; stop talking; the text is on **stdout**, and nothing else ever is. Status, errors and
+telemetry go to stderr, so it pipes with no flags and no `2>/dev/null`. There's no trailing
+newline when stdout isn't a terminal — the caller is usually pasting into a text field, and
+a stray newline sends the message. Nothing was heard means exit 1 with an empty stdout, so
+`||` works and `| pbcopy` never clobbers the clipboard with nothing.
+
+No daemon, no socket, no UI in here. It's a surface for other programs to compose on.
+
+### SIGINT means "I stopped talking"
+
+Not "abort". The utterance in progress is still transcribed and printed:
+
+```sh
+lt dictate > /tmp/said &      # key down
+kill -INT %1                  # key up — and the text still lands
+```
+
+That is what makes hold-to-talk work from any hotkey manager without a daemon or a
+protocol to invent. Left alone, the VAD's own 750ms of trailing silence is the terminator
+instead, which is what you get by just running it and stopping talking.
+
+### Events, for anything that wants to draw
+
+`--events` puts JSON lines on stderr. stdout stays the transcript, so a front end
+subscribes to one without disturbing the other.
+
+| event | carries | |
+|---|---|---|
+| `loading` | `model`, `backend`, `detail` | |
+| `ready` | `threshold`, `calibrated`, `load` | **the mic is live — talk now** |
+| `speech` | — | onset |
+| `level` | `rms`, `speech` | ~33/s, for a meter |
+| `partial` | `text` | only with `--interim 0.4` |
+| `final` | `text`, `took`, `audio` | |
+| `empty`, `error` | `message` | |
+
+`ready` is the one that matters. Without it a UI is guessing when the mic opened, and you
+clip the front of every dictation — the 300ms pre-roll only covers a mic that is *already*
+open, which a process launched on a keypress isn't yet.
+
+### What makes it start fast
+
+`--backend` and `--model` are the same flags as everywhere else, and torch on upstream
+weights is still the default — a fresh checkout has no quantised checkpoint, and
+`lt quantize` is a deliberate step. What changes for dictation is that **launch cost is
+now part of the interaction**, so it's worth knowing what each checkpoint costs. Every
+one of these on an M3 Max, `-t` given so no calibration, best of 2:
+
+| `-M` | on disk | launch → ready | 5s utterance |
+|---|---|---|---|
+| torch bf16 (upstream) | 4.40 GB | 6.35s | 0.59s |
+| `qwen3-asr-1.7b-mxfp4` | 1.26 GB | 0.44s | **0.19s** |
+| `qwen3-asr-1.7b-nvfp4` | 1.33 GB | 0.41s | 0.21s |
+| `qwen3-asr-1.7b-q4g64` | 1.33 GB | **0.39s** | 0.23s |
+| `qwen3-asr-1.7b-q5g32` | 1.77 GB | 0.40s | 0.26s |
+| `qwen3-asr-1.7b-q6g64` | 1.92 GB | 0.40s | 0.26s |
+| `qwen3-asr-1.7b-q8g32` | 2.65 GB | 0.43s | 0.28s |
+| `qwen3-asr-1.7b-q8g64` | 2.50 GB | 0.42s | 0.25s |
+
+Two things fall out of that, neither of them obvious:
+
+- **Launch is flat across every quantisation** — 0.39s to 0.44s from 1.26 GB to 2.65 GB.
+  Once you're on MLX, time-to-ready is process startup and imports, not weight size, so
+  there is nothing to buy by dropping bits. The 15x gap is torch vs MLX, not 4-bit vs
+  8-bit.
+- **Inference spread is real but small**: 0.19s to 0.28s. On this clip every checkpoint
+  produced text identical to torch's *except* `mxfp4`, which ran fastest and got the tail
+  of the utterance wrong. That's one utterance, not a WER measurement — treat it as a
+  reason to check your own recordings before trusting the fast end, not as a verdict.
+
+So the whole menu costs about the same to start, and the trade left is accuracy against
+~0.1s of inference. Which end of that you want isn't something this tool should decide;
+`lt models` lists what you have.
+
+Two things get startup there in the first place, and the second is the bigger one:
+
+- **No forced aligner.** Nothing here consumes word timings, so `load_backend(align=False)`
+  skips those weights entirely rather than just passing `timestamps=False`. On torch that
+  halves the load (4.30s → 2.08s); on mlx q8 it's marginal (0.29s → 0.26s, plus ~0.04s off
+  each utterance) because there wasn't much load left to save.
+- **A remembered threshold.** Calibrating the room costs a full second — *more than loading
+  a quantised model does*, which would make it the reason dictation felt slow. It's cached
+  per input device in `$XDG_CACHE_HOME/localtranscription/calibration.json` and reused;
+  `--recalibrate` retakes it, `--threshold` skips it. Keyed per device because a laptop mic
+  and a desk condenser don't share one, and never written from `--wav`, whose room is a file.
+
+So it starts on a keypress with any of them, and there is nothing to keep resident. That was
+the open question a daemon would have existed to answer, and at ~0.4s it does not need one.
 
 ## Where things go
 

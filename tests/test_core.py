@@ -804,3 +804,141 @@ def test_incremental_partials_are_never_dropped_as_stale():
     worker.start()
     worker.close(drain=True, timeout=5)
     assert worker.dropped == 0
+
+
+# ---------------------------------------------------------------- dictate
+
+
+def test_threshold_cache_round_trips_per_device(tmp_path):
+    """A threshold describes a mic in a room; a laptop mic and a condenser don't share one."""
+    from localtranscription.sources import cached_threshold, remember_threshold
+
+    cal = tmp_path / "calibration.json"
+    assert cached_threshold(None, cal) is None
+
+    remember_threshold(None, 0.0123, cal)
+    remember_threshold(3, 0.0456, cal)
+
+    assert cached_threshold(None, cal) == pytest.approx(0.0123)
+    assert cached_threshold(3, cal) == pytest.approx(0.0456)
+    assert cached_threshold(9, cal) is None
+
+
+def test_threshold_cache_treats_damage_as_a_miss(tmp_path):
+    """A stale cache must cost a calibration, never a failed session."""
+    from localtranscription.sources import cached_threshold, remember_threshold
+
+    cal = tmp_path / "calibration.json"
+    for junk in ("{ not json", "[]", '{"default": {}}', '{"default": {"threshold": 0}}'):
+        cal.write_text(junk)
+        assert cached_threshold(None, cal) is None
+
+    # ...and writing over the damage still works.
+    remember_threshold(None, 0.02, cal)
+    assert cached_threshold(None, cal) == pytest.approx(0.02)
+
+
+def test_transcriber_can_skip_the_aligner():
+    """timestamps=False must reach the backend on finals, not just on partials."""
+    from localtranscription.engine import Transcriber
+    from localtranscription.vad import Chunk
+
+    seen = []
+
+    class Spy:
+        name = detail = "spy"
+
+        def transcribe(self, audio, sample_rate, *, language, timestamps):
+            seen.append(timestamps)
+            return Transcription(text="x")
+
+    audio = np.zeros(FRAME_LEN, dtype=np.float32)
+    for timestamps, expected in ((True, [True]), (False, [False])):
+        seen.clear()
+        w = Transcriber(Spy(), "English", timestamps=timestamps)
+        w.start()
+        w.submit(Chunk(audio, 0.0, final=True))
+        assert w.close(timeout=5)
+        assert seen == expected
+
+
+def _dictate(tmp_path, spec, *args):
+    """Run `lt dictate --wav` in a child with the model seam stubbed out."""
+    import subprocess
+    import textwrap
+
+    import soundfile as sf
+
+    wav = tmp_path / "in.wav"
+    sf.write(wav, np.concatenate(frames(spec)), SAMPLE_RATE)
+
+    child = tmp_path / "child.py"
+    child.write_text(textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(Path(__file__).parent.parent / "src")!r})
+        import localtranscription.app as m
+        from localtranscription.backends import Transcription
+
+        class Fake:
+            name = detail = "fake"
+            def transcribe(self, audio, sample_rate, *, language, timestamps):
+                assert timestamps is False, "dictate must never run the aligner"
+                return Transcription(text="hello there")
+
+        m._load = lambda *a, **k: Fake()
+        sys.argv = ["lt", "dictate", "--wav", {str(wav)!r}, *{list(args)!r}]
+        m.main()
+    """))
+    return subprocess.run([sys.executable, str(child)], capture_output=True, timeout=180)
+
+
+def test_dictate_puts_only_the_text_on_stdout(tmp_path):
+    """The contract other programs compose on: stdout is the transcript and nothing else.
+
+    No trailing newline when piped either -- the caller is pasting into a text field, and
+    a stray newline sends the message.
+    """
+    proc = _dictate(tmp_path, [(False, 1.2), (True, 1.0), (False, 1.0)])
+
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert proc.stdout == b"hello there"
+
+
+def test_dictate_stops_after_one_utterance(tmp_path):
+    """Two utterances in, one out: the command is a single dictation, not a session."""
+    proc = _dictate(
+        tmp_path,
+        [(False, 1.2), (True, 0.8), (False, 1.0), (True, 0.8), (False, 1.0)],
+        "--events",
+    )
+
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert proc.stdout == b"hello there"
+    events = [json.loads(line) for line in proc.stderr.splitlines() if line.strip()]
+    assert sum(e["event"] == "final" for e in events) == 1
+
+
+def test_dictate_exits_nonzero_on_silence(tmp_path):
+    """`lt dictate | pbcopy` must not clobber the clipboard with nothing."""
+    proc = _dictate(tmp_path, [(False, 3.0)], "--wait", "1")
+
+    assert proc.returncode == 1
+    assert proc.stdout == b""
+
+
+def test_dictate_events_carry_what_a_meter_needs(tmp_path):
+    """The stderr stream is the UI's whole input: ready to talk, levels, the text."""
+    proc = _dictate(tmp_path, [(False, 1.2), (True, 1.0), (False, 1.0)], "--events")
+
+    assert proc.returncode == 0, proc.stderr.decode()
+    events = [json.loads(line) for line in proc.stderr.splitlines() if line.strip()]
+    kinds = [e["event"] for e in events]
+
+    # "ready" is what tells a UI the mic is live -- without it you guess, and clip.
+    assert "ready" in kinds and "speech" in kinds and "final" in kinds
+    assert kinds.index("ready") < kinds.index("speech") < kinds.index("final")
+
+    levels = [e for e in events if e["event"] == "level"]
+    assert len(levels) > 30 and all("rms" in e and "speech" in e for e in levels)
+    assert any(e["speech"] for e in levels)
+    assert [e for e in events if e["event"] == "final"][0]["text"] == "hello there"
