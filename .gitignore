@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+out/
+recordings/
+*.pyc
+
+# Quantised checkpoints: GBs, and reproducible with `lt quantize`.
+models/
+bench/results/

@@ -1,0 +1,60 @@
+{
+  "source": "BU301 interview recording, 27:28-28:00, excerpted with permission of the recorder",
+  "sample_rate": 16000,
+  "duration": 32.0,
+  "speakers": [
+    "C",
+    "S"
+  ],
+  "note": "Speaker labels derived from transcript content, independently of any diarizer output.",
+  "turns": [
+    {
+      "speaker": "C",
+      "start": 0.2,
+      "end": 3.9,
+      "text": "...private capital that funded the acquisition"
+    },
+    {
+      "speaker": "S",
+      "start": 4.6,
+      "end": 4.9,
+      "text": "Mmm Okay"
+    },
+    {
+      "speaker": "C",
+      "start": 5.0,
+      "end": 11.6,
+      "text": "Not not super liberty to talk about the details ... tell you about it offline"
+    },
+    {
+      "speaker": "S",
+      "start": 12.2,
+      "end": 21.2,
+      "text": "okay okay yeah interesting ... Thank you Charlie"
+    },
+    {
+      "speaker": "C",
+      "start": 21.6,
+      "end": 26.8,
+      "text": "Absolutely happy to ... give me a ring and we'll figure it out"
+    },
+    {
+      "speaker": "S",
+      "start": 26.8,
+      "end": 29.0,
+      "text": "Okay Thanks Brosky Have a good one"
+    },
+    {
+      "speaker": "C",
+      "start": 29.4,
+      "end": 30.0,
+      "text": "All right y'all enjoy"
+    },
+    {
+      "speaker": "S",
+      "start": 30.1,
+      "end": 31.1,
+      "text": "Thank you Bye"
+    }
+  ]
+}

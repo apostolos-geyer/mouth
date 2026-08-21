@@ -1,0 +1,38 @@
+[project]
+name = "localtranscription"
+version = "0.3.0"
+description = "Live local transcription with Qwen3-ASR + forced alignment"
+requires-python = ">=3.12"
+dependencies = [
+    "qwen-asr>=0.0.6",
+    "torch>=2.13.0",
+    "sounddevice>=0.5.1",
+    "numpy>=1.26",
+    "soundfile>=0.13",
+    "typer>=0.15",
+    "textual>=1.0",
+]
+
+[project.optional-dependencies]
+# MLX port of the same two models. Reports 3-4x over torch and reuses decoder KV cache
+# across chunks. Not installed by default: pulls the whole mlx stack.
+mlx = ["mlx-qwen3-asr>=0.3.5"]
+# Diarization. coremltools runs the converted pyannote/Sortformer models on the ANE/GPU;
+# scipy is the clustering, and is otherwise only present transitively via librosa.
+diarize = ["coremltools>=9.0", "scipy>=1.11"]
+
+[project.scripts]
+localtranscription = "localtranscription.app:main"
+lt = "localtranscription.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/localtranscription"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

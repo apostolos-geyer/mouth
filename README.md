@@ -1,0 +1,389 @@
+# localtranscription
+
+Live local transcription with Qwen3-ASR + Qwen3-ForcedAligner, running on MPS.
+
+Adapted from the offline pipeline at `~/Desktop/school/spring-2026/tools/qwen-transcriber/`
+(built for the entrepreneur interview) to run against the microphone in real time.
+
+```sh
+uv sync
+uv run lt tui          # or: uv run localtranscription tui
+```
+
+## Commands
+
+```sh
+lt tui                    # full-screen live view (q quit · p pause · c clear)
+lt cli                    # streaming output to stdout
+lt devices                # list microphones
+lt languages              # list supported ASR languages
+lt backends               # which inference backends are installed
+lt models                 # local checkpoints available to --model
+lt quantize               # build a quantised checkpoint (the big perf win)
+lt diarize FILE           # who spoke when, offline
+lt cadence 10             # what the partial schedule costs on a 10s utterance
+
+lt tui -l Greek -m 2      # language + mic index
+lt cli --wav clip.wav     # replay a 16kHz wav instead of the mic
+lt cli --no-record        # don't save audio
+```
+
+First run downloads ~5GB of weights. After that the model loads in about 5s.
+
+`--language` is a hint, not a hard constraint — speaking Greek with the English default
+still produces Greek, but inconsistently, romanizing the same phrase on one pass and not
+the next. Setting it properly is worth it.
+
+## Layout
+
+```
+src/localtranscription/
+  vad.py         VAD + Cadence (when partials fire)
+  engine.py      model loading, inference worker, session driver
+  backends.py    torch / mlx behind one transcribe() method
+  quantize.py    build quantised MLX checkpoints (`lt quantize`)
+  sources.py     mic and wav frame sources
+  audio.py       decode wav/flac/m4a/mp3/mp4 to 16k mono
+  recorder.py    per-utterance audio + manifest
+  formats.py     txt / words.json / srt / timestamped.md / rttm
+  diarize/       who spoke when
+    coreml.py      model loading + per-model compute units
+    offline.py     segment -> embed -> cluster, whole recording at once
+  tui.py         Textual front end
+  app.py         typer entrypoint
+pocs/
+  live.py        v1 — minimal, argparse, transcribes at pauses only
+  live2.py       v2 — typer + Textual, fixed-cadence partials
+tests/           CPU-only: VAD, cadence, recorder, formats
+```
+
+`pocs/` are self-contained PEP 723 scripts (`./pocs/live2.py` just runs). They're frozen
+reference points; v3 is the package.
+
+## How it works
+
+`qwen_asr` exposes a `streaming_transcribe()` API, but it's **vLLM-only** and drops
+timestamps, so it's no use on a Mac. Instead the mic stream is cut into utterances by an
+energy VAD and each is pushed through the same `transcribe()` call the offline tool used —
+so the forced aligner stays in play and word-level timestamps survive, re-based onto a
+session-wide clock.
+
+```
+mic (16k mono) -> 30ms frames -> RMS VAD -> chunk -> queue -> transcribe() -> text + words
+```
+
+- Threshold auto-calibrates off 1s of room noise (`--threshold` overrides). Speech opens
+  after 90ms above it, closes after 750ms below.
+- 300ms pre-roll before each onset so word starts aren't clipped; closing silence trimmed
+  to 210ms.
+- An utterance needs 300ms of *voiced* audio to count, so coughs and key clicks never
+  reach the model to be hallucinated over.
+- Inference runs on a worker thread; capture never blocks.
+- Utterances cap at 30s (the forced aligner's own limit is 180s).
+
+### Partials and adaptive cadence
+
+Text appears while you're still talking. Partial passes transcribe the utterance so far
+and land **in the transcript itself** — the in-progress line is a live widget (dim italic,
+trailing `▌`) that keeps rewriting until the final pass hardens it in place, so healing is
+visible exactly where the text will end up.
+Partials **heal** — because each re-transcribes the whole prefix rather than appending, a
+word already on screen can be revised:
+
+```
+… The quick brown fox.
+… The quick brown fox jumps over the lazy.
+  The quick brown fox jumps over the lazy dog.
+```
+
+The schedule is where the cost lives. Every partial re-encodes its whole prefix, so fixed
+spacing `c` fires at `c, 2c, 3c…` and sums to ~`n²/2c` — quadratic in utterance length.
+Geometric spacing makes the sum dominated by the final pass, so it's cheaper *and* the
+first partial lands sooner:
+
+| 10s utterance | first text | audio processed |
+|---|---|---|
+| fixed 1.2s (v2) | 1.2s | 53.2s (5.3x realtime) |
+| adaptive (v3) | 0.4s | 31.3s (3.1x realtime) |
+
+`lt cadence <seconds>` prints this for any setting. `--growth 1.0` reverts to fixed
+spacing, which is the honest baseline for benchmarking.
+
+Two things keep partials affordable: they skip the forced aligner
+(`return_time_stamps=False` — their timestamps get discarded anyway), and they're
+droppable, so a stale partial never starves the finals that get saved.
+
+**Known limit:** `--max-gap` caps how long a partial may lag, but once it binds, spacing
+is constant again and cost returns to quadratic — so long utterances cost more than the
+geometric schedule implies. Encoder caching is the real fix.
+
+Earlier notes here called the 30s case "marginal" on the assumption torch ran ~6x realtime.
+Measurement says otherwise: torch does **~10-15x realtime** for clips of 2s and up (0.19s
+for 2s, 0.57s for 8s, 2.07s for 32s), so a 30s utterance's ~193s of scheduled audio is
+about 16s of compute — roughly half realtime, comfortable rather than marginal. The ~6x
+figure came from a single 3.2s clip where fixed per-call overhead dominates.
+
+## Recordings
+
+On by default. Every utterance is written as FLAC alongside a `manifest.jsonl` entry:
+
+```json
+{"id": "utt-0001", "audio": "utt-0001.flac", "start": 0.99, "duration": 3.18,
+ "hypothesis": "...", "words": [...],
+ "interims": [{"at": 0.4, "text": "…", "took": 0.31}, ...]}
+```
+
+`interims` is the schedule the partials actually fired on. That's deliberate: replaying a
+real session's exact schedule is the only like-for-like way to measure whether caching
+helped. It's also the substrate for the correction loop — audio paired with what the model
+thought it heard.
+
+## Backends
+
+Inference sits behind a `Backend` Protocol in `backends.py`, selected with `--backend`:
+
+```sh
+lt backends                # which are installed
+lt models                  # checkpoints available to --model
+lt tui --backend torch     # default: PyTorch + transformers on MPS
+lt tui --backend mlx       # MLX port (needs: uv sync --extra mlx)
+
+lt tui -M models/qwen3-asr-1.7b-q8g64 -b mlx   # a quantised checkpoint
+lt tui --aligner Qwen/Qwen3-ForcedAligner-0.6B --dtype bf16
+```
+
+Weights are configuration, not constants. `--model` and `--aligner` each take an HF repo
+id or a local directory, and `--dtype` picks compute precision (`auto` = bf16 on torch,
+fp16 on mlx). Quantisation is read off the checkpoint rather than passed as a flag,
+because it is a property of the weights on disk.
+
+The engine's whole demand on a model is one method — hand it audio, get back text and
+optionally word timings:
+
+```python
+def transcribe(self, audio, sample_rate, *, language, timestamps) -> Transcription
+```
+
+Results normalise to our own `Word`/`Transcription` types rather than passing a library's
+objects through, which is what keeps the boundary real: torch calls them `time_stamps`
+with `.start_time` attributes, MLX calls them `segments` with `["start"]` keys, and the
+engine knows about neither. `--device` is torch-only — MLX uses unified memory and has no
+device argument.
+
+### Measured: quantisation is the whole game
+
+An earlier revision of this file concluded "torch is faster here" — MLX measured ~2x
+*slower* at every clip length, against the port's advertised 3-4x. That was true, and it
+was the wrong comparison: it pitted torch bf16 against MLX **fp16**, and unquantised is
+not how you run MLX. Re-measured on this machine (M3 Max, 40-core GPU), same 1.7B weights,
+per `transcribe()` call:
+
+| clip | torch bf16/MPS | mlx fp16 | mlx q8/g64 | mlx q4/g64 |
+|---|---|---|---|---|
+| 0.5s | 0.099s | 0.223s | **0.048s** | 0.044s |
+| 2s | 0.284s | 0.613s | **0.129s** | 0.110s |
+| 8s | 1.080s | 2.362s | **0.470s** | 0.379s |
+| 16s | 2.110s | 4.401s | **0.919s** | 0.719s |
+| 30s | 2.658s | 7.216s | **1.961s** | 1.135s |
+| load | 10.0s | 0.69s | **0.29s** | 0.24s |
+| on disk | 4.4 GB | 4.4 GB | 2.50 GB | 1.33 GB |
+
+So the port is 2.1-2.7x slower than torch unquantised and **2.2x faster at 8-bit**. The
+model is memory-bandwidth-bound: shrinking the weights *is* the optimisation, and fp16 vs
+bf16 is noise beside it. Nothing about the model tier changes — these are the same 1.7B
+weights, quantised, not a smaller model.
+
+8-bit is the recommended setting. Upstream measures it at +0.04pp WER; end-to-end on this
+project's own recordings (34s, 5 utterances, 18 timed words), torch bf16 and mlx q8
+produced **identical text and identical word timestamps** — all 18 within 20ms.
+
+Quantise the aligner too. With the *fp16* MLX aligner one word ("Oh", an isolated
+interjection) landed at 1.28s against torch's 0.24s; with an 8-bit aligner every word
+matches torch exactly. Same command, different flag:
+
+```sh
+lt quantize Qwen/Qwen3-ForcedAligner-0.6B    # -> models/qwen3-forcedaligner-0.6b-q8g64
+lt tui -b mlx -M models/qwen3-asr-1.7b-q8g64 --aligner models/qwen3-forcedaligner-0.6b-q8g64
+```
+
+4-bit costs +0.43pp WER upstream for another ~1.7x on long clips.
+
+```sh
+lt quantize                                  # 8-bit by default -> models/qwen3-asr-1.7b-q8g64
+lt quantize --bits 4                         # speed-first
+lt quantize --mode mxfp4                     # MLX float modes: mxfp4, mxfp8, nvfp4
+lt models                                    # what's on disk
+lt tui --backend mlx -M models/qwen3-asr-1.7b-q8g64
+```
+
+`torch` stays the **default** because a fresh checkout has no quantised checkpoint and
+`lt quantize` is a deliberate step. Once you've run it, mlx is the fast path.
+
+One upstream limitation worth knowing: `mlx_qwen3_asr`'s loader reads `bits` and
+`group_size` out of `quantization_config.json` but always re-quantises with
+`mode="affine"`. The `mxfp4`/`mxfp8`/`nvfp4` modes save `.scales` and no `.biases`, so an
+affine parameter tree can't be filled and `load_weights` raises. `backends._load_mlx_model`
+mirrors their load path and honours `mode`, which is what makes those formats selectable
+at all — it's a ~3-line change upstream.
+
+Two bugs in the adapter were only found by running it, both because their README disagrees
+with their code: `dtype` is an `mx.Dtype`, not the documented string (a string reaches
+`x.astype("float16")` and raises), and `forced_aligner` is `Optional[str | ForcedAligner]`,
+not the documented bool — `True` passes straight through `_resolve_aligner` and is returned
+*as* the aligner, so every timestamped call would have died. The aligner is also built once
+and passed as an instance: given `None` or a string, `_resolve_aligner` constructs a fresh
+0.6B aligner on **every call**.
+
+## Next: v4, encoder + KV caching
+
+Partials re-encode audio already processed. The architecture is friendlier to fixing this
+than expected:
+
+- **The audio encoder is chunk-local.** `Qwen3ASRAudioAttention.is_causal = False`, but
+  `_prepare_attention_mask` builds a *block-diagonal* mask over fixed `n_window * 2`
+  chunks — bidirectional within a chunk, zero across chunks. Completed chunks never see
+  later audio, so their encoder output is identical no matter what follows. Only the
+  ragged tail chunk needs recomputing.
+- **The KV cache follows from that.** The text side is causal with standard
+  `past_key_values` / `DynamicCache`. The decoder prefix is `[prompt][audio embeddings]`,
+  and if those embeddings are stable, the prefix KV is reusable.
+
+This is why qwen gated streaming to vLLM: their streaming re-feeds all audio too and
+leans on vLLM's automatic prefix caching. vLLM has no Metal support, so on a Mac it has
+to be hand-rolled — drop below `transcribe()` and drive
+`Qwen3ASRForConditionalGeneration` directly.
+
+## Diarization
+
+Who spoke when, as a separate stage from what was said.
+
+```sh
+uv sync --extra diarize
+lt diarize meeting.m4a                       # wav, flac, m4a, mp3, mp4
+lt diarize meeting.m4a -o meeting.rttm       # RTTM for dscore / pyannote.metrics
+lt diarize meeting.m4a --words out/x.words.json   # label an existing transcript
+lt diarize meeting.m4a -n 3                  # exact speaker count, if known
+```
+
+It runs the pyannote community-1 family through **CoreML**, not torch: the segmentation
+and embedding networks go to the ANE/GPU, which leaves the Metal GPU free for ASR. On an
+M3 Max, a 28-minute 3-speaker interview diarizes in **25s — 65x realtime**. pyannote's own
+torch pipeline on MPS is ~24x, and its weights are gated; these conversions are not.
+
+Three stages, which is what the model set dictates:
+
+1. **Segment.** 10s in, `(589, 7)` out. The 7 is a *powerset* — one class per subset of up
+   to 3 simultaneous speakers, so a single argmax decides overlap as well as identity.
+2. **Embed.** Each locally-detected speaker gets a 256-d embedding of only its own frames.
+   Speaker ids inside a window are arbitrary; embeddings are what link a voice across them.
+3. **Cluster.** Agglomerative on cosine distance over the whole recording, which is what
+   makes "speaker 1" the same person at 00:05 and at 27:00.
+
+Windows are 10s wide and 1s apart, so every frame is decided by ten independent looks.
+
+### What the tuning cost
+
+Two settings had to be found against real audio, because the obvious ones both failed:
+
+- **Cluster only on clean embeddings.** An embedding from frames where two people overlap
+  describes neither; a short one describes the mask. Filtering to solo speech of at least
+  2s took anchor purity from 59% to 100% on the interview.
+- **...but relax that when there isn't enough.** The same filter on a 32s excerpt of rapid,
+  overlapping turn-taking left **2 usable embeddings out of 46**, and the clip collapsed to
+  one speaker. `_reliable` now walks a ladder and stops at the first rung with enough to
+  work on. Filters that assume a long recording fail exactly where the recording is short.
+
+Average linkage, not complete. Complete also resists the chaining that made an early
+version report 98.6% of a recording as one speaker — but its threshold is set by a
+cluster's *worst* pair, so the value tuned on 2201 embeddings merged everything on 46.
+
+Accuracy: community-1 reports 10.6% DER on AMI SDM using PLDA-scored VBx clustering. This
+uses cosine agglomerative clustering, which is simpler and faster but weaker at separating
+similar voices — expect worse than 10.6%. `PLDA.mlmodelc` and `plda-parameters.json` ship
+in the same repo, so that is the upgrade path, and `cluster_embeddings` is the only
+function that would change.
+
+### Apple Silicon specifics
+
+Two things here are not generic numpy:
+
+- **Batched segmentation.** The repo ships a batch-32 export of the same network. One
+  dispatch covering 32 windows is 4.08 ms/window against 8.42 ms/window for 32 single
+  dispatches — 2.1x, purely from amortising CoreML's per-call overhead. Windows are cut
+  per batch, not stacked up front, because stacking 28 minutes of them is 1.07 GB.
+- **Pairwise distances via matmul.** `scipy.pdist(metric="cosine")` is a scalar C loop, and
+  this is the one axis that grows with recording length. For unit-norm rows the matrix is
+  `1 - X @ X.T`, which goes to MLX/Metal when available and to Accelerate (AMX) otherwise:
+
+  | embeddings | scipy pdist | Accelerate | MLX/Metal |
+  |---|---|---|---|
+  | 1471 (28 min) | 201 ms | 2.1 ms | 2.1 ms |
+  | 3000 | 836 ms | 9.1 ms | 7.2 ms |
+  | 8000 (~2 hr) | 5964 ms | 105 ms | **41.6 ms** |
+
+  Identical results to 3e-7, and 143x at the size that matters.
+
+Compute units are chosen per model, not per process: segmentation runs the same on ANE or
+GPU, while the embedding model is 2.7x faster letting CoreML choose (11.6 ms) than pinned
+to the ANE (31.5 ms). `--compute-units` overrides.
+
+## Shutdown and resource bounds
+
+Quitting is immediate — measured at ~0.12s even with an inference deliberately wedged for
+60s — and completed utterances are still saved.
+
+- Quit drops queued **partials** (disposable by definition) but keeps queued **finals**
+  (the product). A wav ending naturally still finishes its backlog.
+- The stop event is owned by the front end, not created inside `run_session`, so quitting
+  during model load or calibration actually stops something.
+- Results are read off the worker, not from `run_session`'s return value — the UI closes
+  before that returns, and reading the return value silently discarded finished work.
+- An inference that won't return is abandoned after `SHUTDOWN_TIMEOUT`; the worker is a
+  daemon thread.
+- **`main()` always hard-exits.** Loading spins up ThreadPoolExecutors inside
+  huggingface/transformers, and `concurrent.futures` registers an atexit hook that joins
+  those workers *non-daemonically* — so Ctrl-C during load hangs in `_python_exit ->
+  t.join()` with all our work already done. Measured: 10s+ and still hanging on a plain
+  return, 0.35s with the hard exit (rc 130). Real exceptions still print their traceback
+  first.
+
+Nothing is leaked across exit — process death releases memory, fds, and the Metal context,
+and no child processes are spawned. Three unbounded-growth paths inside a long session are
+capped explicitly:
+
+| path | bound |
+|---|---|
+| `SessionRecorder._pending` interims | freed when a final is empty or raises; hard cap `MAX_PENDING` |
+| TUI transcript widgets | `MAX_LINES` (view only; saved transcript is unaffected) |
+| truncated manifest line from a hard exit | skipped on load rather than failing the session |
+
+The inference queue is deliberately *not* bounded: capping it would mean dropping finals,
+i.e. losing transcript. Depth is surfaced as `queue N` in the HUD instead.
+
+## Gotchas
+
+- **Don't subclass `threading.Thread`.** CPython keeps private attributes on it and they
+  move between versions: `_stop` was a method in 3.12, 3.13 added `_handle`. Both collided
+  with names used here and broke at runtime — the second only after uv silently picked a
+  different interpreter, since `requires-python` doesn't pin one. Everything holds a
+  thread instead of being one.
+- **Load the model before starting the TUI.** Loading spawns a subprocess and Textual's
+  replacement stdout has no real fileno for it to inherit — `bad value(s) in fds_to_keep`.
+- `max_new_tokens=2048` is carried from the offline tool; the 512 default silently
+  truncated long chunks there.
+
+## Tests
+
+```sh
+uv run pytest tests/ -q      # ~7s, offline
+```
+
+CPU-only for VAD, cadence, recorder, formats and the diarization logic. The end-to-end
+diarization tests run against a vendored 32-second excerpt in `tests/fixtures/`, whose
+speaker turns were labelled from the transcript's *words* rather than from any diarizer
+output — so they check correctness, not just that nothing changed. They skip rather than
+download when the CoreML weights aren't already cached, which keeps the suite offline.
+
+`tests/test_core.py` also pins the `mlx_qwen3_asr` private names that
+`backends._load_mlx_model` reimplements, so an upstream rename fails here with the reason
+instead of surfacing as an ImportError halfway through `lt tui`.
