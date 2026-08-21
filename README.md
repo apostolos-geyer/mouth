@@ -15,7 +15,7 @@ uv run lt tui          # or: uv run localtranscription tui
 ```sh
 lt tui                    # full-screen live view (q quit · p pause · c clear)
 lt cli                    # streaming output to stdout
-lt dictate                # one utterance to stdout, then exit
+lt dictate                # speech to stdout, then exit (--hold for hold-to-talk)
 lt devices                # list microphones
 lt languages              # list supported ASR languages
 lt backends               # which inference backends are installed
@@ -161,7 +161,7 @@ figure came from a single 3.2s clip where fixed per-call overhead dominates.
 
 ## Dictation
 
-`lt tui` and `lt cli` are sessions. `lt dictate` is one utterance:
+`lt tui` and `lt cli` are sessions. `lt dictate` is one dictation:
 
 ```sh
 lt dictate | pbcopy                 # talk, stop talking, it's on the clipboard
@@ -182,13 +182,39 @@ No daemon, no socket, no UI in here. It's a surface for other programs to compos
 Not "abort". The utterance in progress is still transcribed and printed:
 
 ```sh
-lt dictate > /tmp/said &      # key down
-kill -INT %1                  # key up — and the text still lands
+lt dictate --hold > /tmp/said &   # key down
+kill -INT %1                      # key up — and the text still lands
 ```
 
 That is what makes hold-to-talk work from any hotkey manager without a daemon or a
-protocol to invent. Left alone, the VAD's own 750ms of trailing silence is the terminator
-instead, which is what you get by just running it and stopping talking.
+protocol to invent.
+
+### Two ways to decide you're done
+
+The termination policy is the thing that varies, and a key-driven flow wants the second:
+
+| | ends when | for |
+|---|---|---|
+| default | the VAD sees 750ms of silence | a bare `lt dictate \| pbcopy`, nothing driving it |
+| `--hold` | you signal | hold-to-talk |
+
+Without `--hold`, the pause that closes an utterance also ends the command — so thinking
+for a second mid-sentence truncates the dictation there, while the key is still down and
+you're still talking:
+
+```
+$ lt dictate --wav paused.wav            # speech, 1.5s pause, more speech
+But it was like private capital that funded the acquisition.
+
+$ lt dictate --wav paused.wav --hold
+But it was like private capital that funded the acquisition. Super appreciate. Thank
+you, Charlie. Absolutely, happy to. And so, if you have more questions or you need more.
+```
+
+`--hold` costs nothing in release latency. Utterances still close on their own pauses and
+transcribe as they go, so when the signal lands only the last one is outstanding — the
+join is over work already done. They're joined with a space, because these are pauses
+inside one dictation rather than separate lines, and the destination is a text field.
 
 ### Events, for anything that wants to draw
 

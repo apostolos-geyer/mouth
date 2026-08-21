@@ -942,3 +942,25 @@ def test_dictate_events_carry_what_a_meter_needs(tmp_path):
     assert len(levels) > 30 and all("rms" in e and "speech" in e for e in levels)
     assert any(e["speech"] for e in levels)
     assert [e for e in events if e["event"] == "final"][0]["text"] == "hello there"
+
+
+def test_dictate_hold_keeps_going_through_pauses(tmp_path):
+    """Hold-to-talk: a pause mid-thought is not the end of the dictation.
+
+    Without --hold the 750ms that closes an utterance also ends the command, so
+    everything said after thinking for a second is lost while the key is still down.
+    """
+    spec = [(False, 1.2), (True, 0.8), (False, 1.2), (True, 0.8), (False, 1.0)]
+
+    stops = _dictate(tmp_path, spec, "--events")
+    holds = _dictate(tmp_path, spec, "--events", "--hold")
+
+    assert stops.stdout == b"hello there"
+    assert holds.stdout == b"hello there hello there"
+
+    finals = lambda p: sum(  # noqa: E731
+        json.loads(line)["event"] == "final"
+        for line in p.stderr.splitlines() if line.strip()
+    )
+    assert finals(stops) == 1
+    assert finals(holds) == 2

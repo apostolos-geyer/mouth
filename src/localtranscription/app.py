@@ -456,6 +456,9 @@ DICT_REC = typer.Option(False, "--record/--no-record",
 DICT_FIRST = typer.Option(0.0, "--interim",
                           help="Emit provisional text this many seconds in "
                                "[dim](0 = off; only useful with --events)[/].")
+HOLD = typer.Option(False, "--hold",
+                    help="Keep listening through pauses until signalled, instead of "
+                         "stopping at the first one. [dim]For hold-to-talk.[/]")
 
 
 class _Events:
@@ -480,11 +483,11 @@ class _Events:
 def dictate(
     language: str = LANG, mic: Optional[int] = MIC, wav: Optional[Path] = WAV,
     threshold: Optional[float] = THRESH, recalibrate: bool = RECAL, wait: float = WAIT,
-    events: bool = EVENTS, interim: float = DICT_FIRST, record: bool = DICT_REC,
-    record_dir: Path = RECDIR, backend: str = BACKEND, model: str = MODEL,
-    dtype: str = DTYPE, device: str = DEVICE,
+    events: bool = EVENTS, interim: float = DICT_FIRST, hold: bool = HOLD,
+    record: bool = DICT_REC, record_dir: Path = RECDIR, backend: str = BACKEND,
+    model: str = MODEL, dtype: str = DTYPE, device: str = DEVICE,
 ):
-    """One utterance to stdout, then exit. [dim]A surface to compose on.[/]
+    """Speech to stdout, then exit. [dim]A surface to compose on.[/]
 
     Talk; stop talking; the text is on stdout. Nothing else ever is — status goes to
     stderr — so it pipes:
@@ -496,6 +499,17 @@ def dictate(
     still transcribed and printed. That is what makes hold-to-talk work from any hotkey
     manager with no daemon and no protocol — start it on key down, `kill -INT` it on key
     up.
+
+    Two ways to decide when you're done, and a key-driven one wants the second:
+
+    [b]default[/] — the pause ends it. The VAD closes an utterance after 750ms of silence
+    and that is the whole result. Right for a bare `lt dictate | pbcopy` with nothing
+    driving it.
+
+    [b]--hold[/] — the signal ends it. Pauses no longer stop anything, so you can think
+    mid-sentence while still holding the key; every utterance is transcribed as it
+    closes and they're joined on release. Costs nothing in latency: only the last one
+    is still outstanding when the signal lands.
 
     Exits 1 with nothing on stdout if nothing was heard, so `||` works.
     """
@@ -531,7 +545,7 @@ def dictate(
     class Hooks:
         def __init__(self):
             self.stop = None
-            self.text = None
+            self.parts = []
             self.heard = False
             self.deadline = None
 
@@ -567,15 +581,16 @@ def dictate(
             emit("partial", text=seg.text)
 
         def segment(self, seg):
-            if self.text is not None:
-                return
-            self.text = seg.text
+            self.parts.append(seg.text)
             emit("final", text=seg.text, took=round(seg.took, 3),
                  audio=round(seg.audio_sec, 3))
             if not events:
                 err.print(f"[dim]{seg.took:.2f}s for {seg.audio_sec:.1f}s of audio[/]")
-            # One utterance is the whole job.
-            self.stop.set()
+            # Under --hold the pause is just a pause: whoever is holding the key decides
+            # when this ends, and utterances closed along the way are pieces of one
+            # dictation. Otherwise the first pause is the whole job.
+            if not hold:
+                self.stop.set()
 
         def error(self, offset, msg):
             emit("error", message=msg)
@@ -585,7 +600,9 @@ def dictate(
     hooks = Hooks()
     run_session(cfg, hooks, backend=backend_obj)
 
-    text = (hooks.text or "").strip()
+    # Joined with a space, not a newline: under --hold these are pauses inside one
+    # dictation, not separate lines, and the destination is a text field.
+    text = " ".join(p.strip() for p in hooks.parts if p.strip())
     if not text:
         emit("empty")
         if not events:
