@@ -750,6 +750,38 @@ i.e. losing transcript. Depth is surfaced as `queue N` in the HUD instead.
 - `max_new_tokens=2048` is carried from the offline tool; the 512 default silently
   truncated long chunks there.
 
+## Checks
+
+```sh
+uv run ruff check src tests    # lint
+uv run ruff format src tests   # format (line length 92)
+uv run ty check                # types
+uv run pytest tests/ -q        # ~25s, offline
+```
+
+All four are clean. Two of ruff's defaults are disabled because they invert this
+codebase's design rather than critique it: **PLC0415** (imports inside functions) fires
+146 times on the lazy imports that let `lt devices` run without importing torch and let
+dictation start on a keypress, and **B008** (calls in argument defaults) is typer's API.
+Complexity metrics are off for the same reason — `segment_utterances` and the decode loop
+are long because they're state machines, and splitting them would spread the state.
+
+`ty` rather than pyrefly for the type gate: on this codebase pyrefly's `basic` preset
+finds only the mlx imports, and `strict` finds 183, of which 107 are "annotate this
+parameter" — a migration, not a review. ty found the real annotation bugs at zero
+configuration. pyrefly stays installed for `pyrefly infer` and `stubgen`, which ty has no
+equivalent of. Both are pre-1.0-ish in different ways: ty is 0.0.73, pyrefly is 1.2.
+
+Three suppressions exist, each with its reason at the site: `mlx.core` is a compiled
+extension shipped with no stubs and no `py.typed`, so no checker can resolve it; the
+partial-decoder capabilities are probed with `getattr` on purpose and so aren't on the
+`Backend` protocol; and `takes_device` is a runtime discriminator over two constructors
+that genuinely differ.
+
+There is **no static shape checking for MLX arrays** — pyrefly's tensor support is
+torch-only, and the runtime option (jaxtyping + beartype, which does work on `mx.array`)
+costs a per-call check in a decode loop, which is the wrong trade here.
+
 ## Tests
 
 ```sh
