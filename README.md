@@ -107,6 +107,7 @@ first partial lands sooner:
 |---|---|---|
 | fixed 1.2s (v2) | 1.2s | 53.2s (5.3x realtime) |
 | adaptive (v3) | 0.4s | 31.3s (3.1x realtime) |
+| `--partials stream` | 0.4s | 10.0s (1.0x realtime) |
 
 `lt cadence <seconds>` prints this for any setting. `--growth 1.0` reverts to fixed
 spacing, which is the honest baseline for benchmarking.
@@ -117,7 +118,37 @@ droppable, so a stale partial never starves the finals that get saved.
 
 **Known limit:** `--max-gap` caps how long a partial may lag, but once it binds, spacing
 is constant again and cost returns to quadratic — so long utterances cost more than the
-geometric schedule implies. Encoder caching is the real fix.
+geometric schedule implies.
+
+### `--partials stream`: the quadratic term, removed
+
+`mlx-qwen3-asr` has an incremental decoder: feed it only the audio it hasn't seen and it
+keeps its KV cache across turns. Partials then cost time proportional to the utterance
+rather than to the square of it. Opt in with `--partials stream` (mlx only — qwen's own
+streaming path is vLLM-only, and vLLM has no Metal support).
+
+Measured on a real 11.4s utterance, q8 on an M3 Max:
+
+| | partials | partial compute | first text | final |
+|---|---|---|---|---|
+| `--partials reencode` (default) | 7 | 1.94s | 0.84s | 0.61s |
+| `--partials stream` | 5 | **0.78s** | 0.81s | 0.65s |
+
+**2.5x less compute for provisional text, at the same latency.** The VAD switches to
+emitting deltas, so partial audio sums to the utterance's own length instead of ~n²/2c —
+on a 12s utterance, 35.3s of re-processed audio becomes 11.9s.
+
+It is not the default, because the two modes differ in more than cost:
+
+- `reencode` **heals**. Each pass re-transcribes the whole prefix, so a word already on
+  screen can be revised — which is the behaviour the live view is built around.
+- `stream` **appends**. The decoder commits to a prefix (`stable_text`, monotonic by
+  design) and only the tail after it moves. Provisional segments carry that prefix as
+  `Segment.stable` so a front end can render it settled and the rest as still-moving.
+
+The saved transcript is identical either way: the final pass is a full `transcribe()` over
+the whole utterance with the forced aligner, and nothing about partials touches it.
+Verified — both modes produced the same text and the same 55 timed words.
 
 Earlier notes here called the 30s case "marginal" on the assumption torch ran ~6x realtime.
 Measurement says otherwise: torch does **~10-15x realtime** for clips of 2s and up (0.19s
@@ -262,7 +293,12 @@ not the documented bool — `True` passes straight through `_resolve_aligner` an
 and passed as an instance: given `None` or a string, `_resolve_aligner` constructs a fresh
 0.6B aligner on **every call**.
 
-## Next: v4, encoder + KV caching
+## Encoder + KV caching, and what's left
+
+`--partials stream` above uses the decoder-side half of this. The notes below are why it
+works, and what the encoder side would still add.
+
+### Original analysis
 
 Partials re-encode audio already processed. The architecture is friendlier to fixing this
 than expected:

@@ -58,19 +58,30 @@ THRESH = typer.Option(None, "--threshold", "-t", help="RMS VAD threshold [dim](a
 FIRST = typer.Option(0.4, "--interim", help="When the first partial fires, and the floor between partials.")
 GROWTH = typer.Option(1.6, "--growth", help="Partial spacing growth [dim](1.0 = fixed spacing)[/].")
 MAXGAP = typer.Option(3.0, "--max-gap", help="Longest a partial may lag on a long utterance.")
+PARTIALS = typer.Option("reencode", "--partials",
+                        help="How provisional text is computed: [b]reencode[/b] "
+                             "(re-transcribe the prefix; heals, quadratic) or "
+                             "[b]stream[/b] (feed only new audio to a cached decoder; "
+                             "linear, appends). [dim]stream needs --backend mlx.[/]")
+CHUNKSEC = typer.Option(2.0, "--stream-chunk",
+                        help="Seconds of audio per streaming decode [dim](--partials stream)[/].")
 REC = typer.Option(True, "--record/--no-record", help="Save per-utterance audio + manifest.")
 RECDIR = typer.Option(paths.record_dir(), "--record-dir", help="Where recordings go.")
 
 
 def _config(out, language, device, mic, wav, threshold, first, growth, max_gap, record,
             record_dir, backend="torch", model=DEFAULT_ASR, aligner=DEFAULT_ALIGNER,
-            dtype="auto") -> Config:
+            dtype="auto", partials="reencode", stream_chunk=2.0) -> Config:
     if language not in LANGUAGES:
         raise typer.BadParameter(f"{language!r} not supported. Try `lt languages`.")
     if backend not in BACKENDS:
         raise typer.BadParameter(f"{backend!r} unknown. Try `lt backends`.")
     if dtype not in ("auto", *DTYPES):
         raise typer.BadParameter(f"{dtype!r} unknown. Choose auto, {', '.join(DTYPES)}.")
+    if partials not in ("reencode", "stream"):
+        raise typer.BadParameter(f"{partials!r} unknown. Choose reencode or stream.")
+    if stream_chunk <= 0:
+        raise typer.BadParameter("--stream-chunk must be positive.")
     # Checkpoint refs are resolved in backends.resolve_checkpoint, which knows about the
     # checkpoint directory. An earlier guard here only fired when the ref's *parent*
     # existed, so a stale `models/foo` sailed past it and died as a Hub 401.
@@ -79,6 +90,7 @@ def _config(out, language, device, mic, wav, threshold, first, growth, max_gap, 
         out_dir=out, language=language, device=device, backend=backend, model=model,
         aligner=aligner, dtype=dtype, mic=mic, wav=wav, threshold=threshold,
         cadence=cadence, record=record, record_dir=record_dir,
+        partials=partials, stream_chunk_sec=stream_chunk,
     )
 
 
@@ -309,13 +321,15 @@ def tui(
     wav: Optional[Path] = WAV, threshold: Optional[float] = THRESH, first: float = FIRST,
     growth: float = GROWTH, max_gap: float = MAXGAP, record: bool = REC,
     record_dir: Path = RECDIR, backend: str = BACKEND, model: str = MODEL,
-    aligner: str = ALIGNER, dtype: str = DTYPE,
+    aligner: str = ALIGNER, dtype: str = DTYPE, partials: str = PARTIALS,
+    stream_chunk: float = CHUNKSEC,
 ):
     """Full-screen live view [dim](q quit · p pause · c clear)[/]."""
     from .tui import build_tui
 
     cfg = _config(out, language, device, mic, wav, threshold, first, growth, max_gap,
-                  record, record_dir, backend, model, aligner, dtype)
+                  record, record_dir, backend, model, aligner, dtype, partials,
+                  stream_chunk)
     # Load before entering full-screen: subprocess spawning breaks under Textual's stdout.
     ui = build_tui(cfg, _load(cfg))
     ui.run()
@@ -332,14 +346,16 @@ def cli(
     wav: Optional[Path] = WAV, threshold: Optional[float] = THRESH, first: float = FIRST,
     growth: float = GROWTH, max_gap: float = MAXGAP, record: bool = REC,
     record_dir: Path = RECDIR, backend: str = BACKEND, model: str = MODEL,
-    aligner: str = ALIGNER, dtype: str = DTYPE,
+    aligner: str = ALIGNER, dtype: str = DTYPE, partials: str = PARTIALS,
+    stream_chunk: float = CHUNKSEC,
 ):
     """Stream transcriptions to stdout [dim](Ctrl-C to stop)[/]."""
     from rich.live import Live
     from rich.text import Text
 
     cfg = _config(out, language, device, mic, wav, threshold, first, growth, max_gap,
-                  record, record_dir, backend, model, aligner, dtype)
+                  record, record_dir, backend, model, aligner, dtype, partials,
+                  stream_chunk)
 
     # Provisional text rewrites itself in place, which needs a terminal that can take the
     # line back. Piped to a file, finals-only keeps the output clean.

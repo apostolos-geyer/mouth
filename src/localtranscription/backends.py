@@ -294,6 +294,16 @@ class _MlxStream:
         self._max_context_sec = max_context_sec
         self._state = None
 
+    @property
+    def stable(self) -> str:
+        """The prefix the decoder has committed to and won't revise.
+
+        mlx-qwen3-asr keeps this monotonic by design: it is the largest surviving prefix
+        across turns. The tail after it is still open to being rewritten, which is what a
+        front end should render as provisional.
+        """
+        return ((getattr(self._state, "stable_text", "") or "") if self._state else "").strip()
+
     def feed(self, pcm: np.ndarray) -> str:
         if self._state is None:
             self._state = self._session.init_streaming(

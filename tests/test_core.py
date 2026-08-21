@@ -693,3 +693,122 @@ def test_missing_checkpoint_dir_is_not_a_crash(monkeypatch, tmp_path):
     with pytest.raises(BackendUnavailable) as exc:
         resolve_checkpoint("models/nope")
     assert "lt quantize" in str(exc.value)
+
+
+# ------------------------------------------------------------ incremental partials
+
+def _speech_frames(voiced_frames: int, tail: int = 40):
+    from localtranscription.vad import FRAME_LEN
+
+    loud = np.full(FRAME_LEN, 0.5, dtype=np.float32)
+    quiet = np.zeros(FRAME_LEN, dtype=np.float32)
+    return [quiet] * 5 + [loud] * voiced_frames + [quiet] * tail
+
+
+def test_incremental_partials_do_not_resend_the_prefix():
+    """The whole point: partial audio should sum to the utterance, not to n^2/2c."""
+    from localtranscription.vad import Cadence, SAMPLE_RATE, segment_utterances
+
+    frames = _speech_frames(400)
+    whole = [c for c in segment_utterances(iter(frames), 0.1, cadence=Cadence())]
+    delta = [c for c in segment_utterances(iter(frames), 0.1, cadence=Cadence(),
+                                           incremental=True)]
+
+    partial_audio = lambda cs: sum(len(c.audio) for c in cs if not c.final) / SAMPLE_RATE
+    final = next(c for c in delta if c.final)
+    assert partial_audio(delta) <= len(final.audio) / SAMPLE_RATE + 0.1, \
+        "incremental partials should never exceed the utterance's own length"
+    assert partial_audio(whole) > 2 * partial_audio(delta)
+
+
+def test_incremental_partials_are_flagged():
+    from localtranscription.vad import Cadence, segment_utterances
+
+    chunks = list(segment_utterances(iter(_speech_frames(400)), 0.1,
+                                     cadence=Cadence(), incremental=True))
+    assert all(c.incremental for c in chunks if not c.final)
+    assert not any(c.incremental for c in chunks if c.final)
+
+
+def test_final_chunk_still_carries_the_whole_utterance():
+    """Finals run the aligner and get saved, so they must never be a delta."""
+    from localtranscription.vad import Cadence, SAMPLE_RATE, segment_utterances
+
+    whole = [c for c in segment_utterances(iter(_speech_frames(400)), 0.1, cadence=Cadence())
+             if c.final]
+    delta = [c for c in segment_utterances(iter(_speech_frames(400)), 0.1,
+                                           cadence=Cadence(), incremental=True) if c.final]
+    assert len(whole) == len(delta) == 1
+    assert len(whole[0].audio) == len(delta[0].audio)
+
+
+class _FakeBackend:
+    """Returns text for anything."""
+
+    name, detail = "fake", "fake"
+
+    def transcribe(self, audio, sample_rate, *, language, timestamps):
+        return Transcription(text="hi", words=[Word("hi", 0.0, 0.2)])
+
+
+class _SilentBackend:
+    """Returns nothing -- the branch where a final produces no text at all."""
+
+    name, detail = "silent", "fake"
+
+    def transcribe(self, audio, sample_rate, *, language, timestamps):
+        return Transcription(text="")
+
+
+class _FakeStream:
+    """Records what it was fed, so the engine's contract with a stream is observable."""
+
+    def __init__(self):
+        self.fed: list[int] = []
+        self.closes = 0
+        self.stable = ""
+
+    def feed(self, pcm):
+        self.fed.append(len(pcm))
+        return "hello " * len(self.fed)
+
+    def close(self):
+        self.closes += 1
+        self.fed = []
+
+
+def test_stream_is_reset_between_utterances():
+    """A new utterance must not inherit the previous one's decoder state."""
+    from localtranscription.engine import Transcriber
+    from localtranscription.vad import Chunk
+
+    stream = _FakeStream()
+    worker = Transcriber(_FakeBackend(), "English", stream=stream)
+    worker._transcribe_one(Chunk(np.zeros(1600, np.float32), 0.0, False, incremental=True))
+    worker._transcribe_one(Chunk(np.zeros(1600, np.float32), 5.0, False, incremental=True))
+    assert stream.closes == 1, "changing utterance should close the previous stream"
+
+
+def test_final_closes_the_stream_even_when_it_yields_nothing():
+    from localtranscription.engine import Transcriber
+    from localtranscription.vad import Chunk
+
+    stream = _FakeStream()
+    worker = Transcriber(_SilentBackend(), "English", stream=stream)
+    worker._transcribe_one(Chunk(np.zeros(1600, np.float32), 0.0, False, incremental=True))
+    worker._transcribe_one(Chunk(np.zeros(1600, np.float32), 0.0, True))
+    assert stream.closes >= 1
+
+
+def test_incremental_partials_are_never_dropped_as_stale():
+    """A delta the decoder hasn't seen can't be skipped -- it would hole the stream."""
+    from localtranscription.engine import Transcriber
+    from localtranscription.vad import Chunk
+
+    worker = Transcriber(_FakeBackend(), "English", stream=_FakeStream())
+    worker.submit(Chunk(np.zeros(1600, np.float32), 0.0, False, incremental=True))
+    worker.submit(Chunk(np.zeros(1600, np.float32), 0.0, False, incremental=True))
+    worker.submit(Chunk(np.zeros(1600, np.float32), 0.0, True))
+    worker.start()
+    worker.close(drain=True, timeout=5)
+    assert worker.dropped == 0

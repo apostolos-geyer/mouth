@@ -45,6 +45,10 @@ class Segment:
     text: str
     audio_sec: float
     took: float
+    # For provisional segments only: the prefix the decoder has committed to. A front end
+    # can render this settled and the remainder as still-moving. Empty when the backend
+    # re-transcribes the whole prefix each time, because then nothing is settled.
+    stable: str = ""
 
 
 @dataclass
@@ -68,6 +72,16 @@ class Config:
     cadence: Cadence = field(default_factory=Cadence)
     record: bool = True
     record_dir: Path = field(default_factory=paths.record_dir)
+    # How provisional passes are computed.
+    #   "reencode" -- re-transcribe the whole prefix each time. Best text, and it heals:
+    #                 a word already on screen can be revised. Cost is quadratic in
+    #                 utterance length, which the geometric cadence exists to contain.
+    #   "stream"   -- feed only new audio to a decoder that keeps its KV cache. Linear
+    #                 cost (measured 3.4x -> 1.2x one full pass on a 20s utterance), but
+    #                 text appends rather than healing and first text waits for
+    #                 `stream_chunk_sec`. Needs a backend with open_stream().
+    partials: str = "reencode"
+    stream_chunk_sec: float = 2.0
     session_id: str = ""
 
     def stamped(self) -> str:
@@ -83,8 +97,13 @@ class Transcriber:
     """
 
     def __init__(self, backend: Backend, language, on_segment=None, on_error=None,
-                 on_interim=None, recorder: Optional[SessionRecorder] = None):
+                 on_interim=None, recorder: Optional[SessionRecorder] = None,
+                 stream=None):
         self.backend = backend
+        # An open PartialStream, or None to re-transcribe each prefix. Owned here because
+        # it holds per-utterance decoder state that has to be dropped between utterances.
+        self.stream = stream
+        self._stream_at = None  # start time of the utterance the stream is following
         self.language = language
         self.on_segment = on_segment
         self.on_error = on_error
@@ -142,7 +161,9 @@ class Transcriber:
                 return
             # An interim is only worth running if nothing newer is already waiting --
             # otherwise partials pile up and starve the finals that actually get kept.
-            if not item.final and not self.work.empty():
+            # An *incremental* one can't be dropped: its audio is a delta the decoder has
+            # not seen, so skipping it would put a hole in the stream.
+            if not item.final and not item.incremental and not self.work.empty():
                 self.dropped += 1
                 continue
             try:
@@ -153,7 +174,43 @@ class Transcriber:
                 if self.on_error:
                     self.on_error(item.start, str(e))
 
+    def _reset_stream(self, at: float | None):
+        """Point the stream at a new utterance, dropping the previous one's KV cache.
+
+        Only closes if it was actually following one: the first chunk of a session has no
+        previous utterance, and closing a stream that was never opened is a no-op worth
+        not performing.
+        """
+        if self.stream is not None and self._stream_at is not None:
+            self.stream.close()
+        self._stream_at = at
+
+    def _feed_stream(self, chunk: Chunk) -> Segment | None:
+        t0 = time.monotonic()
+        if self._stream_at != chunk.start:
+            self._reset_stream(chunk.start)
+        text = self.stream.feed(chunk.audio).strip()
+        if not text:
+            return None
+        return Segment(chunk.start, text, len(chunk.audio) / SAMPLE_RATE,
+                       time.monotonic() - t0, stable=self.stream.stable)
+
     def _transcribe_one(self, chunk: Chunk):
+        if chunk.incremental and self.stream is not None:
+            seg = self._feed_stream(chunk)
+            if seg is None:
+                return
+            if self.recorder:
+                self.recorder.note_interim(chunk.start, seg.audio_sec, seg.text, seg.took)
+            if self.on_interim:
+                self.on_interim(seg)
+            return
+
+        if chunk.final:
+            # Whatever happens below -- empty text, an exception -- this utterance is over,
+            # and the next one must not inherit its decoder state.
+            self._reset_stream(None)
+
         t0 = time.monotonic()
         out = self.backend.transcribe(
             chunk.audio,
@@ -215,6 +272,16 @@ def run_session(cfg: Config, hooks, backend=None, stop: Optional[threading.Event
     session_id = cfg.stamped()
     recorder = SessionRecorder(cfg.record_dir, session_id) if cfg.record else None
 
+    # Streaming partials need a backend that keeps decoder state; ask for one only if the
+    # caller opted in, and fall back quietly rather than failing a session over a partial.
+    stream = None
+    if cfg.partials == "stream" and getattr(backend, "streaming", False):
+        stream = backend.open_stream(
+            language=cfg.language, chunk_sec=cfg.stream_chunk_sec
+        )
+    elif cfg.partials == "stream":
+        hooks.status(f"{backend.name} has no streaming decoder; partials re-encode")
+
     source = make_source(cfg.mic, cfg.wav, realtime=True).open()
     worker = Transcriber(
         backend,
@@ -223,6 +290,7 @@ def run_session(cfg: Config, hooks, backend=None, stop: Optional[threading.Event
         on_error=hooks.error,
         on_interim=getattr(hooks, "interim", None),
         recorder=recorder,
+        stream=stream,
     )
     worker.start()
     # Publish immediately: results accumulate on the worker, so a front end that quits
@@ -239,7 +307,8 @@ def run_session(cfg: Config, hooks, backend=None, stop: Optional[threading.Event
         if not stop.is_set():
             hooks.ready(threshold)
             for chunk in segment_utterances(
-                source.frames(stop), threshold, on_level=hooks.level, cadence=cfg.cadence
+                source.frames(stop), threshold, on_level=hooks.level, cadence=cfg.cadence,
+                incremental=stream is not None,
             ):
                 worker.submit(chunk)
     finally:

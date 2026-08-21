@@ -27,11 +27,17 @@ class Chunk:
 
     final=False is a provisional look at an utterance still in progress; it gets
     superseded by the final pass over the same (longer) audio.
+
+    incremental=True means `audio` is only what's new since the previous provisional
+    chunk, not the whole prefix -- for a backend that keeps its own decoder state. The
+    final chunk always carries the complete utterance either way, because that is the
+    pass that runs the aligner and gets saved.
     """
 
     audio: np.ndarray
     start: float
     final: bool
+    incremental: bool = False
 
 
 @dataclass
@@ -71,7 +77,8 @@ class Cadence:
         return out
 
 
-def segment_utterances(frame_iter, threshold: float, on_level=None, cadence: Cadence | None = None):
+def segment_utterances(frame_iter, threshold: float, on_level=None,
+                       cadence: Cadence | None = None, incremental: bool = False):
     """Cut a stream of fixed-size frames into utterances.
 
     Yields Chunks. on_level(rms, in_speech) is called per frame so a UI can draw a meter
@@ -81,12 +88,17 @@ def segment_utterances(frame_iter, threshold: float, on_level=None, cadence: Cad
     everything heard so far -- so text appears while you're still talking. Re-sending the
     whole prefix is what qwen's own streaming mode does; cutting at a fixed boundary
     instead would slice mid-word and break the way partials heal.
+
+    With incremental=True the provisional chunks instead carry only the audio since the
+    last one. That is only correct for a backend holding its own decoder state across the
+    utterance -- otherwise each chunk is a fragment with no context.
     """
     preroll = deque(maxlen=PREROLL_FRAMES)
     utterance: list[np.ndarray] = []
     speech_run = 0
     silence_run = 0
     voiced = 0
+    sent = 0  # frames of the current utterance already emitted, for incremental mode
     in_speech = False
     utt_start = 0.0
     consumed = 0
@@ -119,6 +131,7 @@ def segment_utterances(frame_iter, threshold: float, on_level=None, cadence: Cad
                 utterance = list(preroll)
                 utt_start = max(0.0, now - len(utterance) * FRAME_LEN / SAMPLE_RATE)
                 next_interim = cadence.next_at(0.0) if cadence else None
+                sent = 0
                 preroll.clear()
             continue
 
@@ -137,12 +150,20 @@ def segment_utterances(frame_iter, threshold: float, on_level=None, cadence: Cad
             in_speech = False
             speech_run = 0
             voiced = 0
+            sent = 0
             utterance = []
             next_interim = None
             preroll.clear()
         elif next_interim is not None and voiced >= min_voiced and utt_sec >= next_interim:
             next_interim = cadence.next_at(utt_sec)
-            yield Chunk(np.concatenate(utterance), utt_start, final=False)
+            if incremental:
+                fresh = utterance[sent:]
+                sent = len(utterance)
+                if fresh:
+                    yield Chunk(np.concatenate(fresh), utt_start, final=False,
+                                incremental=True)
+            else:
+                yield Chunk(np.concatenate(utterance), utt_start, final=False)
 
     if in_speech and utterance:  # stream ended mid-utterance
         audio = build(utterance, silence_run, voiced)
