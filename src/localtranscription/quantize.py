@@ -17,6 +17,8 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
+from . import paths
+
 # Copied alongside the weights so the checkpoint is self-contained -- Session() resolves
 # the tokenizer from the model directory, and a bare safetensors file has no tokenizer.
 SIDECARS = (
@@ -32,10 +34,14 @@ MODES = ("affine", "mxfp4", "mxfp8", "nvfp4")
 
 
 def default_out(model: str, bits: int, group_size: int, mode: str) -> Path:
-    """models/<name>-q8g64 -- readable at a glance in `lt models`."""
+    """<cache>/models/<name>-q8g64 -- readable at a glance in `lt models`.
+
+    Cache, not data: these are GBs and this command rebuilds any of them from the
+    upstream weights, so losing the directory costs time rather than work.
+    """
     stem = Path(model).name.lower()
     tag = f"q{bits}g{group_size}" if mode == "affine" else f"{mode}g{group_size}"
-    return Path("models") / f"{stem}-{tag}"
+    return paths.models_dir() / f"{stem}-{tag}"
 
 
 def quantize(model: str, *, bits: int = 8, group_size: Optional[int] = None,

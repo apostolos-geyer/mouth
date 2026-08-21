@@ -562,3 +562,64 @@ def test_mlx_quantize_supports_the_modes_we_offer():
     doc = mx.quantize.__doc__ or ""
     for mode in MODES:
         assert mode in doc, f"MLX no longer documents quantization mode {mode!r}"
+
+
+# --------------------------------------------------------------- xdg paths
+
+def test_paths_default_under_xdg(monkeypatch, tmp_path):
+    from localtranscription import paths
+
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    assert paths.out_dir() == tmp_path / ".local/share/localtranscription/out"
+    assert paths.record_dir() == tmp_path / ".local/share/localtranscription/recordings"
+    assert paths.models_dir() == tmp_path / ".cache/localtranscription/models"
+
+
+def test_paths_honour_xdg_env(monkeypatch, tmp_path):
+    from localtranscription import paths
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "d"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "c"))
+    assert paths.out_dir() == tmp_path / "d/localtranscription/out"
+    assert paths.models_dir() == tmp_path / "c/localtranscription/models"
+
+
+def test_paths_ignore_relative_xdg_values(monkeypatch, tmp_path):
+    """The spec says a relative XDG_* value is invalid and must be ignored.
+
+    Honouring one would put user data wherever the process happened to be started, which
+    is the failure this module exists to prevent.
+    """
+    from localtranscription import paths
+
+    monkeypatch.setenv("XDG_DATA_HOME", "relative/path")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    assert paths.out_dir() == tmp_path / ".local/share/localtranscription/out"
+
+
+def test_paths_ignore_empty_xdg_values(monkeypatch, tmp_path):
+    from localtranscription import paths
+
+    monkeypatch.setenv("XDG_CACHE_HOME", "")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    assert paths.models_dir() == tmp_path / ".cache/localtranscription/models"
+
+
+def test_config_defaults_are_not_relative(monkeypatch, tmp_path):
+    """A default Config must never write into the working directory."""
+    from localtranscription.engine import Config
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    cfg = Config()
+    assert cfg.out_dir.is_absolute() and cfg.record_dir.is_absolute()
+    assert tmp_path in cfg.out_dir.parents
+
+
+def test_config_defaults_are_independent_instances(monkeypatch, tmp_path):
+    """default_factory, not a shared mutable default."""
+    from localtranscription.engine import Config
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    assert Config().out_dir == Config().out_dir

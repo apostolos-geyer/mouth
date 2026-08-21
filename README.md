@@ -21,6 +21,7 @@ lt backends               # which inference backends are installed
 lt models                 # local checkpoints available to --model
 lt quantize               # build a quantised checkpoint (the big perf win)
 lt diarize FILE           # who spoke when, offline
+lt paths                  # where transcripts, recordings and checkpoints live
 lt cadence 10             # what the partial schedule costs on a 10s utterance
 
 lt tui -l Greek -m 2      # language + mic index
@@ -38,6 +39,7 @@ the next. Setting it properly is worth it.
 
 ```
 src/localtranscription/
+  paths.py       XDG data/cache locations
   vad.py         VAD + Cadence (when partials fire)
   engine.py      model loading, inference worker, session driver
   backends.py    torch / mlx behind one transcribe() method
@@ -122,6 +124,31 @@ Measurement says otherwise: torch does **~10-15x realtime** for clips of 2s and 
 for 2s, 0.57s for 8s, 2.07s for 32s), so a 30s utterance's ~193s of scheduled audio is
 about 16s of compute — roughly half realtime, comfortable rather than marginal. The ~6x
 figure came from a single 3.2s clip where fixed per-call overhead dominates.
+
+## Where things go
+
+Nothing is written into the working directory: a session run inside a repo would
+otherwise drop transcripts and audio into it, and `.gitignore` becomes load-bearing.
+Defaults follow the XDG Base Directory spec.
+
+```sh
+lt paths                  # show them, and which flag overrides each
+```
+
+| | default | override |
+|---|---|---|
+| transcripts | `$XDG_DATA_HOME/localtranscription/out` | `--out` |
+| recordings | `$XDG_DATA_HOME/localtranscription/recordings` | `--record-dir` |
+| checkpoints | `$XDG_CACHE_HOME/localtranscription/models` | `--model` |
+
+Falling back to `~/.local/share` and `~/.cache`. Checkpoints live under the **cache**
+because `lt quantize` rebuilds any of them from upstream weights — losing that directory
+costs time, not work. Transcripts and recordings are data and don't.
+
+macOS's own convention is `~/Library/Application Support`; the env vars are honoured, so
+`XDG_DATA_HOME=~/Library/Application\ Support` gets that without a code change. A relative
+or empty `XDG_*` value is ignored, per the spec — honouring one would put user data
+wherever the process happened to start, which is the failure this avoids.
 
 ## Recordings
 

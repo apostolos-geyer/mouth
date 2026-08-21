@@ -24,6 +24,7 @@ from .backends import (
     describe_checkpoint,
     load_backend,
 )
+from . import paths
 from . import quantize as qz
 from .engine import LANGUAGES, Config, run_session
 from .formats import fmt_clock, write_outputs
@@ -38,7 +39,7 @@ app = typer.Typer(
 )
 
 # Shared across the run commands; typer accepts the same OptionInfo in several signatures.
-OUT = typer.Option(Path("out"), "--out", "-o", help="Where transcripts go.")
+OUT = typer.Option(paths.out_dir(), "--out", "-o", help="Where transcripts go.")
 LANG = typer.Option("English", "--language", "-l", help="ASR language hint.")
 DEVICE = typer.Option("mps", "--device", help="torch device [dim](torch backend only)[/].")
 BACKEND = typer.Option("torch", "--backend", "-b",
@@ -58,7 +59,7 @@ FIRST = typer.Option(0.4, "--interim", help="When the first partial fires, and t
 GROWTH = typer.Option(1.6, "--growth", help="Partial spacing growth [dim](1.0 = fixed spacing)[/].")
 MAXGAP = typer.Option(3.0, "--max-gap", help="Longest a partial may lag on a long utterance.")
 REC = typer.Option(True, "--record/--no-record", help="Save per-utterance audio + manifest.")
-RECDIR = typer.Option(Path("recordings"), "--record-dir", help="Where recordings go.")
+RECDIR = typer.Option(paths.record_dir(), "--record-dir", help="Where recordings go.")
 
 
 def _config(out, language, device, mic, wav, threshold, first, growth, max_gap, record,
@@ -136,21 +137,24 @@ def backends():
 
 
 @app.command()
-def models(model_dir: Path = typer.Option(Path("models"), "--dir",
+def models(model_dir: Path = typer.Option(paths.models_dir(), "--dir",
                                           help="Where local checkpoints live.")):
     """List local checkpoints available to [b]--model[/b]."""
-    console.print(f"  [cyan]{DEFAULT_ASR}[/]  [dim]upstream · unquantised[/]")
-    console.print(f"  [cyan]{DEFAULT_ALIGNER}[/]  [dim]upstream · aligner[/]")
+    console.print("[dim]upstream[/]")
+    console.print(f"  [cyan]{DEFAULT_ASR}[/]  [dim]unquantised[/]")
+    console.print(f"  [cyan]{DEFAULT_ALIGNER}[/]  [dim]aligner[/]")
     found = sorted(p for p in model_dir.glob("*") if (p / "config.json").exists()) \
         if model_dir.exists() else []
     if not found:
-        console.print(f"\n[dim]No local checkpoints in {model_dir}/. "
+        console.print(f"\n[dim]No local checkpoints in {model_dir}. "
                       f"Build one with `lt quantize`.[/]")
         return
-    console.print()
+    # Name the directory once rather than on every row: these paths are long, and a
+    # wrapped list is harder to read than the thing it's listing.
+    console.print(f"\n[dim]{model_dir}[/]")
     for p in found:
         tag = describe_checkpoint(str(p)) or "unquantised"
-        console.print(f"  [cyan]{p}[/]  [dim]{tag} · {qz.size_gb(p):.2f} GB[/]")
+        console.print(f"  [cyan]{p.name}[/]  [dim]{tag} · {qz.size_gb(p):.2f} GB[/]")
 
 
 @app.command()
@@ -259,6 +263,24 @@ def diarize(
         dest.write_text(json.dumps(labelled, indent=2))
         console.print(f"[dim]→ {dest}  ({sum(w['speaker'] is not None for w in labelled)}"
                       f"/{len(labelled)} words labelled)[/]")
+
+
+@app.command("paths")
+def paths_():
+    """Show where transcripts, recordings and checkpoints are kept."""
+    rows = [
+        ("transcripts", paths.out_dir(), "--out"),
+        ("recordings", paths.record_dir(), "--record-dir"),
+        ("checkpoints", paths.models_dir(), "--model"),
+    ]
+    for label, path, flag in rows:
+        mark = "[green]✓[/]" if path.exists() else "[dim]· (not yet created)[/]"
+        console.print(f"  [cyan]{label}[/] [dim]({flag})[/]  {mark}")
+        console.print(f"    {path}", highlight=False)
+    console.print(
+        "\n[dim]XDG_DATA_HOME / XDG_CACHE_HOME move these. Checkpoints live under the\n"
+        "cache because `lt quantize` rebuilds them; transcripts and recordings do not.[/]"
+    )
 
 
 @app.command()

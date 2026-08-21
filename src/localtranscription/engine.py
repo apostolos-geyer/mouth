@@ -19,6 +19,7 @@ from .backends import (  # noqa: F401
     Backend,
     load_backend,
 )
+from . import paths
 from .recorder import SessionRecorder
 from .sources import make_source
 from .vad import SAMPLE_RATE, Cadence, Chunk, segment_utterances
@@ -48,7 +49,9 @@ class Segment:
 
 @dataclass
 class Config:
-    out_dir: Path = Path("out")
+    # Defaults resolve under XDG rather than the working directory: a session run inside
+    # a repo shouldn't write transcripts and audio into it. See paths.py.
+    out_dir: Path = field(default_factory=paths.out_dir)
     language: str = "English"
     device: str = "mps"
     backend: str = "torch"
@@ -64,7 +67,7 @@ class Config:
     threshold: Optional[float] = None
     cadence: Cadence = field(default_factory=Cadence)
     record: bool = True
-    record_dir: Path = Path("recordings")
+    record_dir: Path = field(default_factory=paths.record_dir)
     session_id: str = ""
 
     def stamped(self) -> str:
