@@ -944,6 +944,12 @@ def transcribe(
         context=context,
     )
     cfg.realtime = False
+    # A file arrives faster than the model consumes it, so the queue builds a backlog of
+    # finished utterances. The 2s default is sized for quitting a live session, where one
+    # abandoned final sits among many; here it silently truncated the transcript -- a
+    # 28-minute interview came back as 826 words because the drain gave up. Nothing is
+    # waiting on this, and the work is bounded by the file.
+    cfg.shutdown_timeout = 3600.0
     if not audio_file.exists():
         raise typer.BadParameter(f"{audio_file}: no such file")
 

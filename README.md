@@ -117,6 +117,22 @@ Not, not super at at liberty. But I'll tell you about it.
 Okay.
 ```
 
+Checked against a 28-minute 3-speaker interview with a hand-corrected reference
+transcript: **6520 words against the reference's 6400**, 3 speakers found unprompted, 16x
+realtime for the transcription and 66x for the diarization.
+
+Getting there found two bugs worth naming, because both failed silently:
+
+- **The drain gave up.** A file arrives faster than the model consumes it, so the queue
+  builds a backlog. `shutdown_timeout` is 2s — sized for quitting a live session, where one
+  abandoned utterance sits among many — and it truncated the interview to **826 words**.
+- **Calibration assumed the recording starts quiet.** The threshold is 3x the noise floor,
+  and the floor was measured as the median of the first second. This interview had its
+  pauses edited out, so it opens on speech: 0.146 against a real floor of 0.004, and 36%
+  of the words never reached the model. A file can look at all of itself before deciding,
+  so it now takes a low percentile of the whole recording. Mic audio is unaffected — on a
+  recorded utterance both estimators produce exactly 0.005.
+
 One decode and one pass over the file — running `lt diarize` afterwards would re-read and
 re-analyse it, and leave you pasting a generated filename between two commands.
 

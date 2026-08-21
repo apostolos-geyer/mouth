@@ -17,16 +17,26 @@ from .audio import load as load_audio
 from .vad import FRAME_LEN, FRAME_MS, SAMPLE_RATE
 
 
-def ambient_threshold(levels) -> float:
-    """Turn measured frame RMS into a VAD threshold.
+def ambient_threshold(levels, quiet=50.0) -> float:
+    """Turn measured frame RMS into a VAD threshold: three times the noise floor.
 
-    Shared so the mic and a replayed file agree: these constants are tuned, and having
-    them written twice meant tuning the live path silently left replay -- what tests and
-    demos actually run -- behaving differently.
+    `quiet` is which percentile of the given frames is taken to *be* the noise floor. The
+    median is right when you are listening to a room and most frames are silence, which is
+    the mic's situation: it has one second, taken before anyone speaks.
+
+    It is wrong for audio that has been edited. A recording with the silence cut out has
+    speech at its median, so 3x median lands above most of the speech -- measured on a
+    28-minute interview, a threshold of 0.146 where the floor was 0.004, which dropped 36%
+    of the words. A file can look at all of itself before deciding, so it uses a low
+    percentile and finds the floor that is actually there.
+
+    Both paths keep the same 3x and the same 0.005 minimum, so mic audio lands in the same
+    place either way -- on a recorded utterance here, p10 clamps to exactly the 0.005 the
+    median path already produced.
     """
     if len(levels) == 0:
         return 0.01
-    return max(3.0 * float(np.median(levels)), 0.005)
+    return max(3.0 * float(np.percentile(levels, quiet)), 0.005)
 
 
 def _mic_key(mic: int | None) -> str:
@@ -146,11 +156,19 @@ class WavSource:
         return self._audio
 
     def calibrate(self, seconds: float = 1.0, stop=None) -> float:
-        head = self._audio[: int(seconds * SAMPLE_RATE)]
-        if head.size == 0:
+        """The noise floor of the whole file, not of its first second.
+
+        `seconds` is ignored, and that is the point: it exists because a microphone has to
+        commit to a threshold before it has heard anything. A file is already here. Judging
+        it by its opening second assumes the recording starts with silence, and the one
+        that does not -- an interview with the pauses edited out -- opens on speech and
+        calibrates 30x too high.
+        """
+        a = self._audio
+        if a.size < FRAME_LEN:
             return 0.01
-        frames = head[: head.size - head.size % FRAME_LEN].reshape(-1, FRAME_LEN)
-        return ambient_threshold(np.sqrt((frames**2).mean(axis=1)))
+        frames = a[: a.size - a.size % FRAME_LEN].reshape(-1, FRAME_LEN)
+        return ambient_threshold(np.sqrt((frames**2).mean(axis=1)), quiet=10.0)
 
     def frames(self, stop: threading.Event) -> Iterator[np.ndarray]:
         for i in range(0, len(self._audio) - FRAME_LEN, FRAME_LEN):

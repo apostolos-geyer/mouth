@@ -1539,3 +1539,55 @@ def test_context_is_a_capability_and_the_tui_can_edit_it():
     assert not ui.context.has_class("open")
     # And a backend that cannot take context still builds a UI rather than crashing.
     assert build_tui(Config(), Plain()) is not None
+
+
+# ------------------------------------------------- calibrating a file vs a microphone
+
+
+def test_a_file_is_calibrated_from_all_of_itself(tmp_path):
+    """A recording that opens on speech must not be judged by its opening second.
+
+    The microphone has to commit to a threshold from one second taken before anyone
+    talks, so the median of that second is the noise floor. A file is already here, and
+    assuming it starts quiet is how a 28-minute interview with the pauses edited out
+    calibrated at 0.146 against a floor of 0.004 -- and lost 36% of its words.
+    """
+    import soundfile as sf
+
+    from localtranscription.sources import make_source
+
+    # Loud for a second, quiet for nine: exactly the shape that fools an opening sample.
+    loud = rng.normal(0, 0.3, SAMPLE_RATE).astype(np.float32)
+    quiet = rng.normal(0, 0.001, SAMPLE_RATE * 9).astype(np.float32)
+    path = tmp_path / "starts-loud.wav"
+    sf.write(path, np.concatenate([loud, quiet]), SAMPLE_RATE)
+
+    got = make_source(None, path).open().calibrate()
+    assert got < 0.05, f"calibrated {got:.4f} off the loud opening"
+    # And it is a real floor, not just something small: the quiet part sits at ~0.001.
+    assert 0.005 <= got <= 0.02
+
+
+def test_the_threshold_formula_still_agrees_with_the_microphone():
+    """Both paths keep the same 3x and the same 0.005 minimum.
+
+    Only which percentile counts as the floor differs, so speech-over-silence -- what a
+    microphone actually hears -- lands in the same place either way.
+    """
+    from localtranscription.sources import ambient_threshold
+
+    # Mostly silence with occasional speech, i.e. a room with someone in it.
+    levels = np.concatenate([np.full(90, 0.002), np.full(10, 0.3)])
+    assert ambient_threshold(levels) == ambient_threshold(levels, quiet=10.0)
+    assert ambient_threshold(np.array([])) == 0.01
+
+
+def test_speech_at_the_median_is_what_breaks_the_median():
+    """The failure the percentile exists for, in three lines."""
+    from localtranscription.sources import ambient_threshold
+
+    # A quarter room tone, three quarters speech -- cutting the pauses does not cut the
+    # gaps between words. The real interview measured p10=0.004 against a median of 0.061.
+    edited = np.concatenate([np.full(25, 0.004), np.full(75, 0.2)])
+    assert ambient_threshold(edited) > 0.5, "3x median lands above the speech"
+    assert ambient_threshold(edited, quiet=10.0) < 0.05, "the floor is still there"
