@@ -3,6 +3,7 @@
 import inspect
 import json
 import os
+import time
 import sys
 from pathlib import Path
 
@@ -1101,3 +1102,124 @@ def test_a_broken_config_stops_every_command_but_reports_itself(tmp_path):
     shown = _invoke(tmp_path, broken, "config")
     assert shown.exit_code == 1
     assert "line 2" in shown.stdout
+
+
+# ------------------------------------------------------- drafted partials (--x-partial-draft)
+
+
+def _drafter(prev, paying=True):
+    """A draft decoder holding a previous answer, with no model behind it.
+
+    The draft policy is pure sequence logic, so it tests without weights -- which matters,
+    because the parts that need a model are the parts a CPU test can never reach.
+    """
+    from localtranscription.backends import _MlxDraftDecoder
+
+    d = _MlxDraftDecoder(session=None, language="English")
+    d._prev = list(prev)
+    d._paying = paying
+    d._index()
+    return d
+
+
+def test_draft_continues_the_previous_answer():
+    d = _drafter([10, 11, 12, 13, 14, 15])
+    assert d._draft([10, 11, 12])[:3] == [13, 14, 15]
+
+
+def test_draft_realigns_after_a_revision():
+    """The whole reason the draft is found by text and not by index.
+
+    A partial that inserts one token near the start shifts every later token by one. Under
+    index alignment the draft never matches again and acceptance collapses for the rest of
+    the utterance -- which is precisely what happens when a partial heals.
+    """
+    prev = [1, 2, 3, 4, 5, 6, 7, 8]
+    generated = [1, 2, 99, 3, 4]          # 99 inserted; 3,4 are prev[2:4]
+    assert _drafter(prev)._draft(generated)[:4] == [5, 6, 7, 8]
+
+
+def test_draft_prefers_the_most_recent_occurrence():
+    """A repeated phrase must resolve to where we are now, not where we were."""
+    d = _drafter([7, 8, 1, 2, 7, 8, 3, 4])
+    assert d._draft([7, 8])[:2] == [3, 4]
+
+
+def test_draft_is_empty_when_it_stops_paying():
+    """The break-even guard: a verification costs ~3.5 steps and must earn them back."""
+    assert _drafter([1, 2, 3], paying=False)._draft([1]) == []
+    assert _drafter([])._draft([1, 2]) == []
+
+
+def test_draft_runs_dry_past_the_end_of_the_previous_answer():
+    """The tail a partial exists to add has no draft, and must decode normally."""
+    assert _drafter([1, 2, 3])._draft([1, 2, 3]) == []
+
+
+class _CountingDraft:
+    """Stands in for the drafted decoder so the engine's use of it is observable."""
+
+    def __init__(self):
+        self.calls, self.resets = [], 0
+
+    def transcribe(self, audio, *, utterance):
+        self.calls.append(utterance)
+        return "drafted"
+
+    def reset(self):
+        self.resets += 1
+
+
+def test_finals_never_take_the_drafted_path():
+    """Finals run the aligner and are the artifact that gets saved.
+
+    Drafted decode is verified against a batched argmax, which can differ from the
+    sequential one in the last bits on a near tie -- fine for provisional text that a
+    final overwrites, not for the transcript. So the final must stay on the library's own
+    path no matter what.
+    """
+    from localtranscription.engine import Transcriber
+    from localtranscription.vad import Chunk
+
+    draft = _CountingDraft()
+    segs, interims = [], []
+    w = Transcriber(_FakeBackend(), "English", on_segment=segs.append,
+                    on_interim=interims.append, draft=draft, timestamps=False)
+    w.start()
+    audio = np.zeros(FRAME_LEN, dtype=np.float32)
+    w.submit(Chunk(audio, 1.0, final=False))
+    # Let it drain before queueing the final: a partial with anything newer behind it is
+    # deliberately dropped as stale, which would make this test pass for the wrong reason.
+    for _ in range(500):
+        if interims:
+            break
+        time.sleep(0.01)
+    w.submit(Chunk(audio, 1.0, final=True))
+    assert w.close(timeout=5)
+
+    assert draft.calls == [1.0], "the partial should have been drafted"
+    assert [s.text for s in interims] == ["drafted"]
+    assert [s.text for s in segs] == ["hi"], "the final must come from the backend"
+    assert draft.resets == 1, "a final ends the utterance and must drop its draft"
+
+
+def test_drafted_decode_upstream_symbols_still_exist():
+    """Pin what _MlxDraftDecoder drives below transcribe().
+
+    It reimplements the single-chunk path -- features, prompt, prefill, verify, decode --
+    because that is the only level at which the previous answer can be reused. A rename
+    upstream would otherwise surface mid-session as an AttributeError behind a spinner.
+    """
+    pytest.importorskip("mlx_qwen3_asr")
+    from mlx_qwen3_asr import audio, generate, tokenizer
+
+    missing = [n for mod, n in (
+        (audio, "compute_features"),
+        (generate, "GenerationConfig"),
+        (generate, "resolve_max_new_tokens"),
+        (generate, "_detect_repetition"),
+        (tokenizer, "parse_asr_output"),
+    ) if not hasattr(mod, n)]
+    assert not missing, (
+        f"mlx_qwen3_asr no longer exports {missing}; backends._MlxDraftDecoder needs them."
+    )

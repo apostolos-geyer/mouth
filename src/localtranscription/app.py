@@ -137,13 +137,17 @@ PARTIALS = typer.Option("reencode", "--partials",
                              "linear, appends). [dim]stream needs --backend mlx.[/]")
 CHUNKSEC = typer.Option(2.0, "--stream-chunk",
                         help="Seconds of audio per streaming decode [dim](--partials stream)[/].")
+XDRAFT = typer.Option(False, "--x-partial-draft",
+                      help="[b]Experimental.[/] Decode each partial against the previous "
+                           "one as a speculative draft: same text, far fewer forward "
+                           "passes. [dim]mlx + --partials reencode only.[/]")
 REC = typer.Option(True, "--record/--no-record", help="Save per-utterance audio + manifest.")
 RECDIR = typer.Option(paths.record_dir(), "--record-dir", help="Where recordings go.")
 
 
 def _config(*, out, language, device, mic, wav, threshold, first, growth, max_gap,
             record, record_dir, backend, model, aligner, dtype, partials,
-            stream_chunk, min_speech=MIN_SPEECH_SEC) -> Config:
+            stream_chunk, min_speech=MIN_SPEECH_SEC, x_partial_draft=False) -> Config:
     """Validate CLI values and build a Config.
 
     Keyword-only: seventeen positional arguments in the same order at two call sites is a
@@ -175,6 +179,7 @@ def _config(*, out, language, device, mic, wav, threshold, first, growth, max_ga
         aligner=aligner, dtype=dtype, mic=mic, wav=wav, threshold=threshold,
         cadence=cadence, record=record, record_dir=record_dir,
         partials=partials, stream_chunk_sec=stream_chunk, min_speech=min_speech,
+        x_partial_draft=x_partial_draft,
     )
 
 
@@ -497,6 +502,7 @@ def tui(
     record_dir: Path = RECDIR, backend: str = BACKEND, model: str = MODEL,
     aligner: str = ALIGNER, dtype: str = DTYPE, partials: str = PARTIALS,
     stream_chunk: float = CHUNKSEC, min_speech: float = MINSPEECH,
+    x_partial_draft: bool = XDRAFT,
 ):
     """Full-screen live view [dim](q quit · p pause · c clear)[/]."""
     from .tui import build_tui
@@ -506,6 +512,7 @@ def tui(
         first=first, growth=growth, max_gap=max_gap, record=record, record_dir=record_dir,
         backend=backend, model=model, aligner=aligner, dtype=dtype, partials=partials,
         stream_chunk=stream_chunk, min_speech=min_speech,
+        x_partial_draft=x_partial_draft,
     )
     # Load before entering full-screen: subprocess spawning breaks under Textual's stdout.
     ui = build_tui(cfg, _load(cfg))
@@ -525,6 +532,7 @@ def cli(
     record_dir: Path = RECDIR, backend: str = BACKEND, model: str = MODEL,
     aligner: str = ALIGNER, dtype: str = DTYPE, partials: str = PARTIALS,
     stream_chunk: float = CHUNKSEC, min_speech: float = MINSPEECH,
+    x_partial_draft: bool = XDRAFT,
 ):
     """Stream transcriptions to stdout [dim](Ctrl-C to stop)[/]."""
     from rich.live import Live
@@ -535,6 +543,7 @@ def cli(
         first=first, growth=growth, max_gap=max_gap, record=record, record_dir=record_dir,
         backend=backend, model=model, aligner=aligner, dtype=dtype, partials=partials,
         stream_chunk=stream_chunk, min_speech=min_speech,
+        x_partial_draft=x_partial_draft,
     )
 
     # Provisional text rewrites itself in place, which needs a terminal that can take the

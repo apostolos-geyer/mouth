@@ -534,6 +534,79 @@ not the documented bool — `True` passes straight through `_resolve_aligner` an
 and passed as an instance: given `None` or a string, `_resolve_aligner` constructs a fresh
 0.6B aligner on **every call**.
 
+## Making reencode partials cheaper
+
+Partials re-encode *and* re-decode the whole prefix every pass. The obvious target is the
+re-encoding — and it's the wrong one. Measured per partial on the q8 MLX path:
+
+| prefix | mel | encoder | generate | encoder's share |
+|---|---|---|---|---|
+| 2s | 0.000s | 0.007s | 0.125s | 5% |
+| 8s | 0.001s | 0.017s | 0.336s | 5% |
+| 16s | 0.001s | 0.029s | 0.693s | 4% |
+| 30s | 0.001s | 0.052s | 1.508s | 3% |
+
+**The encoder is 3–5% of a partial.** Caching its output — the plan in the original
+analysis below — is sound, exactly reusable, and worth at most 5%, and only past 8s where
+an attention window completes. The cost is `generate`, which redecodes the entire
+transcript one token at a time at ~9ms per token regardless of what the token is.
+
+### `--x-partial-draft`: the previous partial is a free draft
+
+Experimental, off by default, mlx + `--partials reencode` only.
+
+A partial's answer is almost exactly the previous partial's answer plus a few words. That
+makes the previous answer a draft, and `step_many` verifies a whole draft in one pass over
+the weights instead of one pass per token:
+
+| draft length | `step_many` | k sequential steps | |
+|---|---|---|---|
+| 8 | 19.8ms | 71.6ms | 3.6x |
+| 16 | 21.7ms | 143.1ms | 6.6x |
+| 32 | 19.9ms | 286.2ms | 14.4x |
+| 64 | 30.9ms | 572.5ms | **18.5x** |
+
+Replaying the real partial cadence over seven clips — the test fixture plus six recorded
+utterances, 67 partials — against full decode:
+
+```
+  interview-excerpt   32.0s  14 partials   base 7.99s   draft 4.15s   1.93x
+  utt-0001             3.6s   5 partials   base 0.55s   draft 0.42s   1.32x
+  utt-0001            12.1s   8 partials   base 2.09s   draft 1.35s   1.54x
+  utt-0001             4.3s   5 partials   base 0.45s   draft 0.35s   1.27x
+  utt-0001            30.0s  14 partials   base 3.95s   draft 2.40s   1.65x
+  utt-0002            30.0s  14 partials   base 6.18s   draft 4.50s   1.37x
+  utt-0003            10.0s   7 partials   base 1.10s   draft 0.83s   1.31x
+  TOTAL                                    base 22.3s   draft 14.0s   1.59x
+```
+
+59% of tokens came from the draft. Two things make that number what it is:
+
+- **The draft is located by text, not by index.** One word inserted near the start shifts
+  every later token by one, and index alignment never recovers — which is exactly what a
+  partial does when a revision lands. Matching the tail of the generated tokens against an
+  n-gram index of the previous answer re-finds the place. This alone took acceptance from
+  31% to 59%, and turned two clips that were *slower* into 1.37x and 1.65x.
+- **A break-even guard, judged per pass.** A verification costs ~3.5 sequential steps and
+  replaces accepted+1 of them, so it needs ~3 accepted tokens to pay. Below that, drafting
+  stops for the rest of the pass. Judged per *pass*, not per utterance: the first partials
+  carry almost no text to draft from, and latching on their low acceptance switched
+  drafting off for precisely the long later passes it pays best on.
+
+**Lossless by construction, not bit-identical.** A draft token is accepted only where it
+equals the model's own argmax there, and decoding is greedy, so the accepted path is the
+path plain decoding would have taken — and healing survives, since a word the model wants
+to revise fails to match and decode resumes there. The caveat is float: `step_many`
+batches k positions into one matmul, `step` does them one at a time, and they disagree in
+the last bits. On a near tie the argmax can flip. Across those 67 partials, output matched
+the library on six clips of seven; the seventh — music bleeding into speech — dropped a
+duplicated word (`"real realistic"` → `"realistic"`). Running the same loop with
+`WINDOW = 0` reproduces the library exactly on that clip, which is what isolates it to the
+batched kernel rather than the accept logic.
+
+That is why this is partials-only. **Finals never take this path**: they run the aligner,
+they are what gets saved, and they stay on the library's own `transcribe()`.
+
 ## Encoder + KV caching, and what's left
 
 `--partials stream` above uses the decoder-side half of this. The notes below are why it

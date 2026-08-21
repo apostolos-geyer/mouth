@@ -339,6 +339,211 @@ class _MlxStream:
         self._state = None
 
 
+class _MlxDraftDecoder:
+    """Partial passes for one utterance, decoded against the previous partial as a draft.
+
+    The measurement that motivates this: on the quantised MLX path a partial spends 95%+
+    of its time in `generate` and 3-5% in the audio encoder, so re-encoding the prefix --
+    the cost everyone reaches for first -- is not the problem. Re-*decoding* it is. Every
+    partial regenerates the whole transcript one token at a time, and decode is
+    memory-bandwidth-bound: 8.94ms per token here, whatever the token is.
+
+    But a partial's answer is almost exactly the previous partial's answer plus a few
+    words. That makes the previous answer a free draft, and `step_many` verifies a whole
+    draft in one pass over the weights:
+
+        k      step_many    k sequential
+        16       21.7ms         143.1ms     6.6x
+        64       30.9ms         572.5ms    18.5x
+
+    **Lossless by construction, though not bit-identical.** A draft token is accepted
+    only where it equals the model's own argmax at that position, and transcribe()
+    decodes greedily, so the accepted path is the path plain decoding would have taken --
+    and healing survives, because a word the model now wants to revise simply fails to
+    match and decode resumes there.
+
+    The caveat is float, not logic: `step_many` batches k positions into one matmul and
+    `step` does them one at a time, and the two do not agree in the last bits. On a near
+    tie the argmax can flip. Measured over 60 partials on seven clips, output matched the
+    library on six; the seventh -- music bleeding into speech, where the model was
+    already unstable -- dropped a duplicated word ("real realistic" -> "realistic"). With
+    WINDOW=0, which runs this same loop with no drafting, that clip matches exactly, so
+    the loop is right and the batched kernel is the difference. This is provisional text
+    that a final pass overwrites; it is not the transcript.
+
+    Mirrors the accept/trim loop in mlx_qwen3_asr.generate.generate_speculative, whose
+    draft comes from a second model. Ours comes from the last pass and costs nothing.
+    """
+
+    #: Draft this many tokens per verification. Past ~64 the win flattens (the pass stops
+    #: being bandwidth-bound) while a rejection wastes more, and utterance-length drafts
+    #: would make a single mismatch expensive.
+    WINDOW = 64
+
+    #: How many recent tokens identify where we are in the previous answer. Too short and
+    #: a common phrase matches in the wrong place; too long and nothing matches after a
+    #: revision. 8 is roughly a clause.
+    KEY = 8
+
+    #: A verification costs ~3.5 sequential steps (30.9ms against 8.94ms), and replaces
+    #: accepted+1 of them. Below this it is losing money, so stop drafting the utterance.
+    MIN_ACCEPTED = 3
+
+    def __init__(self, session, language: str):
+        self._session = session
+        self._language = language
+        self._prev: list[int] = []
+        self._at: Optional[float] = None
+        self._ngram: dict = {}
+        self._hits = 0      # draft tokens accepted this pass
+        self._tries = 0     # verifications spent earning them
+        self._paying = True
+        self.accepted = 0   # totals across the session, for the HUD and the tests
+        self.generated = 0
+        self.verifies = 0
+
+    def reset(self) -> None:
+        """Drop the draft. The next utterance's text is not this one's."""
+        self._prev = []
+        self._at = None
+        self._hits = self._tries = 0
+        self._paying = True
+
+    def _index(self) -> None:
+        """Index the previous answer by n-gram, once per pass.
+
+        The lookup below runs inside the decode loop, so it must not be a scan: the naive
+        version walked ~400 tokens x KEY slices per verification, in Python, next to a
+        30ms forward pass. Building {n-gram: position} once per pass is O(len) and makes
+        every lookup a dict hit. Later positions overwrite earlier ones, which is the
+        "most recent occurrence wins" rule a repeated phrase needs.
+        """
+        self._ngram = {}
+        prev = self._prev
+        for n in range(1, self.KEY + 1):
+            for i in range(len(prev) - n + 1):
+                self._ngram[tuple(prev[i:i + n])] = i + n
+
+    def _draft(self, out: list[int]) -> list[int]:
+        """What the previous pass said next, from wherever we are in it now.
+
+        Located by matching the tail of what we have generated against the previous
+        answer, rather than by index. Index alignment only survives substitutions: one
+        word inserted near the start and every later token is off by one, the draft stops
+        matching, and acceptance collapses for the rest of the utterance -- which is
+        exactly what a partial does when a revision lands. Matching on the text itself
+        re-finds the place. Longest key first: a common short phrase can match anywhere,
+        a clause usually can't.
+        """
+        if not self._prev or not self._paying:
+            return []
+        for n in range(min(self.KEY, len(out)), 0, -1):
+            at = self._ngram.get(tuple(out[-n:]))
+            if at is not None:
+                return self._prev[at:at + self.WINDOW]
+        return []
+
+    def transcribe(self, audio: np.ndarray, *, utterance: float) -> str:
+        import mlx.core as mx
+        from mlx_qwen3_asr.audio import compute_features
+        from mlx_qwen3_asr.generate import (
+            GenerationConfig,
+            _detect_repetition,
+            resolve_max_new_tokens,
+        )
+        from mlx_qwen3_asr.tokenizer import parse_asr_output
+
+        if utterance != self._at:
+            self.reset()
+            self._at = utterance
+        # Per pass, not per utterance: the first partials carry almost no text to draft
+        # from, so they accept little through no fault of the policy. Latching on that
+        # switched drafting off for exactly the long later passes it pays best on.
+        self._hits = self._tries = 0
+        self._paying = True
+        self._index()
+
+        model, tok = self._session.model, self._session.tokenizer
+        dtype = self._session.dtype
+        cfg = GenerationConfig(max_new_tokens=resolve_max_new_tokens(
+            2048, audio_duration_sec=len(audio) / 16000))
+
+        mel, lens = compute_features(audio)
+        feats, _ = model.audio_tower(mel.astype(dtype), lens)
+        ids = mx.array([tok.build_prompt_tokens(
+            n_audio_tokens=feats.shape[1], language=self._language, context="")])
+        seq = ids.shape[1]
+        pos = mx.arange(seq)[None, :]
+
+        cache = model.create_cache(max_seq_len=seq + cfg.max_new_tokens)
+        logits = model.prefill(input_ids=ids, audio_features=feats,
+                               position_ids=mx.stack([pos, pos, pos], axis=1), cache=cache)
+        token = int(mx.argmax(logits[0, -1]).item())
+        out = [token]
+        decode_pos = mx.arange(seq, seq + cfg.max_new_tokens + 1)[None, :]
+        decode_pos = mx.stack([decode_pos, decode_pos, decode_pos], axis=1)
+
+        step = 1
+        while step < cfg.max_new_tokens:
+            if token in cfg.eos_token_ids or _detect_repetition(out):
+                break
+            # Whatever the last pass said from here on. Empty once we pass its end --
+            # which is the tail this partial exists to add.
+            draft = self._draft(out)[:max(0, cfg.max_new_tokens - step - 1)]
+            if not draft:
+                logits = model.step(input_ids=mx.array([[token]]),
+                                    position_ids=decode_pos[:, :, step - 1:step],
+                                    cache=cache)
+                token = int(mx.argmax(logits[0, -1]).item())
+                out.append(token)
+                step += 1
+                continue
+
+            verify = model.step_many(
+                input_ids=mx.array([[token, *draft]]),
+                position_ids=decode_pos[:, :, step - 1:step + len(draft)],
+                cache=cache,
+            )
+            pred = [int(x) for x in mx.argmax(verify, axis=-1)[0].tolist()]
+            n = 0
+            while n < len(draft) and pred[n] == draft[n]:
+                n += 1
+            self._hits += n
+            self._tries += 1
+            self.verifies += 1
+            # Stop paying for drafts once they stop paying for themselves. Costs a few
+            # probes per pass rather than a whole pass run at a loss, which is what
+            # unstable audio -- music, crosstalk -- does to inter-partial agreement.
+            if self._tries >= 3 and self._hits / self._tries < self.MIN_ACCEPTED:
+                self._paying = False
+            # Rewind the KV the rejected tail wrote, or the cache no longer describes the
+            # path we are on. Same trim as upstream's speculative loop.
+            cache.trim(len(draft) - n)
+            self.accepted += n
+
+            stop = False
+            for tk in draft[:n]:
+                token = tk
+                out.append(tk)
+                step += 1
+                if step >= cfg.max_new_tokens or tk in cfg.eos_token_ids \
+                        or _detect_repetition(out):
+                    stop = True
+                    break
+            if stop:
+                break
+            token = pred[n]
+            out.append(token)
+            step += 1
+
+        self.generated += len(out)
+        while out and out[-1] in cfg.eos_token_ids:
+            out.pop()
+        self._prev = list(out)
+        _, text = parse_asr_output(tok.decode(out), user_language=self._language)
+        return text
+
+
 class MlxBackend:
     """MLX port (mlx-qwen3-asr).
 
@@ -377,6 +582,7 @@ class MlxBackend:
     requires = ("mlx_qwen3_asr",)
     takes_device = False  # unified memory; there is no device to place anything on
     streaming = True
+    drafting = True
 
     def __init__(self, model: str = DEFAULT_ASR,
                  aligner: Optional[str] = DEFAULT_ALIGNER,
@@ -441,6 +647,9 @@ class MlxBackend:
                     max_context_sec: float = 30.0) -> _MlxStream:
         return _MlxStream(self._session, language, chunk_sec, max_context_sec)
 
+    def open_draft(self, *, language: str) -> _MlxDraftDecoder:
+        return _MlxDraftDecoder(self._session, language)
+
 
 # ---------------------------------------------------------------- registry
 
@@ -465,6 +674,17 @@ def resolve_dtype(backend: str, dtype: Optional[str]) -> str:
     if dtype not in DTYPES:
         raise BackendUnavailable(f"unknown dtype {dtype!r}; choose from {', '.join(DTYPES)}")
     return dtype
+
+
+def open_partial_draft(backend: Backend, *, language: str):
+    """A drafted partial decoder, or None if this backend can't do one.
+
+    Probed rather than required, for the same reason open_partial_stream is: it needs
+    step_many and a trimmable KV cache, which is an mlx_qwen3_asr fact, not a Backend one.
+    """
+    if not getattr(backend, "drafting", False):
+        return None
+    return backend.open_draft(language=language)
 
 
 def open_partial_stream(backend: Backend, *, language: str,

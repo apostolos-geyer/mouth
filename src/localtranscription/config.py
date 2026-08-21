@@ -62,6 +62,7 @@ TEMPLATE = '''\
 
 # [tui]
 # partials = "stream"               # needs backend = "mlx"
+# x-partial-draft = true            # experimental: ~1.6x cheaper reencode partials
 
 # [diarize]
 # threshold = 0.65                  # cosine distance -- NOT the VAD threshold above
