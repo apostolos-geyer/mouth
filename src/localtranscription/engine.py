@@ -78,6 +78,9 @@ class Config:
     # a repo shouldn't write transcripts and audio into it. See paths.py.
     out_dir: Path = field(default_factory=paths.out_dir)
     language: str = "English"
+    # Words the decoder should expect: names, jargon, spellings. Applied to the backend
+    # at load time, and mutable there afterwards -- see Backend.context.
+    context: str = ""
     device: str = "mps"
     backend: str = "torch"
     # Weights are configuration, not a constant: any of these may be a local directory,
@@ -89,6 +92,11 @@ class Config:
     dtype: str = "auto"
     mic: int | None = None
     wav: Path | None = None
+    # Pace a replayed file to the clock, as if it were arriving from a microphone. True
+    # for the live front ends -- watching a demo replay at 40x is not watching anything --
+    # and False for `lt transcribe`, where the audio is already on disk and the wall clock
+    # is nothing but a delay.
+    realtime: bool = True
     threshold: float | None = None
     # None means no partials at all, which is what `--interim 0` asks for.
     cadence: Cadence | None = field(default_factory=Cadence)
@@ -309,7 +317,8 @@ def run_session(cfg: Config, hooks, backend=None, stop: threading.Event | None =
     """Drive one capture session. Returns (segments, words, recorder).
 
     hooks needs: status(str), ready(threshold), bind_stop(Event), level(rms, in_speech),
-    segment(Segment), error(offset, msg); optionally interim(Segment).
+    segment(Segment), error(offset, msg); optionally interim(Segment) and attach(worker),
+    and optionally source(source) to see the opened source before frames are pulled.
 
     Pass a preloaded backend to skip loading here -- the TUI must, because loading spawns
     a subprocess and Textual's replacement stdout has no real fileno for it to inherit
@@ -323,6 +332,7 @@ def run_session(cfg: Config, hooks, backend=None, stop: threading.Event | None =
         dtype=cfg.dtype,
         on_status=hooks.status,
         align=cfg.timestamps,
+        context=cfg.context,
     )
     # The caller may own the event so quitting works before we ever get here -- otherwise
     # there's a window during load and calibration where nothing can stop the session.
@@ -339,7 +349,11 @@ def run_session(cfg: Config, hooks, backend=None, stop: threading.Event | None =
     if partials.mode != cfg.partials:
         hooks.status(f"{backend.name} cannot do {cfg.partials} partials; re-encoding them")
 
-    source = make_source(cfg.mic, cfg.wav, realtime=True).open()
+    source = make_source(cfg.mic, cfg.wav, realtime=cfg.realtime).open()
+    # A file front end wants to know how much audio there is before any of it arrives.
+    opened = getattr(hooks, "source", None)
+    if opened is not None:
+        opened(source)
     worker = Transcriber(
         backend,
         cfg.language,

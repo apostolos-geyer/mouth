@@ -134,6 +134,11 @@ class WavSource:
     def close(self):
         pass
 
+    @property
+    def seconds(self) -> float:
+        """How much audio there is. Known here and nowhere else without decoding twice."""
+        return len(self._audio) / SAMPLE_RATE
+
     def calibrate(self, seconds: float = 1.0, stop=None) -> float:
         head = self._audio[: int(seconds * SAMPLE_RATE)]
         if head.size == 0:

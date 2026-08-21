@@ -43,6 +43,7 @@ uv run lt tui          # or: uv run localtranscription tui
 lt tui                    # full-screen live view (q quit · p pause · c clear)
 lt cli                    # streaming output to stdout
 lt dictate                # speech to stdout, then exit (--hold for hold-to-talk)
+lt transcribe FILE        # a file, as fast as the machine can (~17x realtime)
 lt devices                # list microphones
 lt languages              # list supported ASR languages
 lt backends               # which inference backends are installed
@@ -55,7 +56,9 @@ lt tune                   # set it up for your machine and your voice
 lt cadence 10             # what the partial schedule costs on a 10s utterance
 
 lt tui -l Greek -m 2      # language + mic index
-lt cli --wav clip.m4a     # replay a file instead of the mic (any format, resampled)
+lt cli --wav clip.m4a     # replay a file *in real time*, as if it were the mic
+lt transcribe clip.m4a    # the same file, at full speed, for the transcript
+lt tui --context "Aristotle, peripatetic, Lyceum"   # words to expect
 lt cli --no-record        # don't save audio
 
 lt dictate -b mlx -M qwen3-asr-1.7b-q8g64 | pbcopy    # same --backend/--model as anywhere
@@ -84,6 +87,33 @@ property of your machine, not of the option — an early version wrote "needs th
 to be affordable at all" into the description of a profile, which baked one laptop's
 answer into every laptop's menu. The descriptions now say what the experience is; the
 verdict beside them is measured.
+
+## Transcribing a file
+
+```sh
+lt transcribe lecture.m4a
+```
+
+Same VAD, same model, same outputs as a live session — but the audio is already on disk,
+so nothing waits on a clock. Measured on an M3 Max with the 8-bit checkpoint: **17x
+realtime**, a 32s clip in 1.9s. Partials are off, because nobody is watching text land and
+provisional passes are the expensive half of a live session.
+
+`lt cli --wav` still exists and still paces to the clock — that is for *watching* a replay,
+which is a different thing from wanting the transcript.
+
+## Context
+
+```sh
+lt tui --context "Aristotle, peripatetic, the Lyceum"
+```
+
+Qwen3-ASR biases decoding toward words you tell it to expect: names, jargon, spellings.
+It's a session setting rather than a per-utterance argument, and it's mutable, so the TUI
+can edit it while running — `k` opens the field, and the next utterance uses it.
+
+Off the `Backend` protocol (which stays one method wide) and onto a `Biasable` capability
+protocol, alongside `Streaming` and `Drafting`.
 
 ## Config
 
@@ -116,12 +146,19 @@ construction, because this feeds Click's `default_map` and the layering happens 
 parser. There's no per-flag plumbing to forget and no "was this passed?" sentinel to get
 wrong, which is where hand-rolled versions of this leak.
 
-Bare keys apply to the commands that listen — `tui`, `cli`, `dictate` — plus the two that
-describe them: `tune`, which measures the stack the others run, and `cadence`, which
-prints what a schedule costs. Both were left out at first and both were wrong for it:
-`tune` benchmarked stock torch while the config pointed every real command at a quantised
-MLX checkpoint, and `lt cadence` confidently simulated the shipped schedule rather than
-the configured one.
+A bare key reaches **every command that has that option**, which is nearly all of them —
+"how this machine transcribes" is a setting, not a per-command opinion. Only three
+commands opt out, each because a flag name genuinely means something else there:
+`diarize` (`--threshold` is a cosine distance between voices, not an RMS gate), `quantize`
+(`--model` is the checkpoint to convert), and `models` (`--dir` is where to look).
+
+This was the other way round at first — a hand-written list of commands bare keys *did*
+reach — and it was wrong three times, once for every command added after it: `tune`
+benchmarked stock torch while the config pointed everything else at a quantised MLX
+checkpoint, `cadence` printed the shipped schedule rather than the configured one, and
+`transcribe` gated speech at 0.3s against a config asking for 0.15s. Every one a silent
+wrong answer rather than a failure. Inverted, a new command inherits settings by default
+and only a real collision needs writing down.
 
 Everything else takes a table named after the command, because the same flag name doesn't
 mean the same thing everywhere: `--threshold` is an RMS gate to a session and a cosine

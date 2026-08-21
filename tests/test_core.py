@@ -1070,30 +1070,36 @@ def _map(text):
     return cfgfile.default_map(tomllib.loads(text), _cli_params())
 
 
-def test_bare_keys_reach_every_command_that_listens():
+def test_bare_keys_reach_every_command_with_the_option():
+    """Reaching is the default; only a name collision opts out.
+
+    The inclusion list this replaced was wrong three times in a row -- once for every
+    command added after it -- and each time it was a silent wrong answer rather than a
+    failure.
+    """
     m = _map('backend = "mlx"\nlanguage = "Greek"\n')
-    # `tune` is in this set because it exists to measure the other three: left out, it
-    # benchmarked stock torch while the config pointed every real command at a quantised
-    # MLX checkpoint, and then recommended a cadence from those numbers.
-    assert set(m) == {"tui", "cli", "dictate", "tune"}
+    assert {"tui", "cli", "dictate", "tune", "transcribe"} <= set(m)
     assert all(v == {"backend": "mlx", "language": "Greek"} for v in m.values())
+
+
+def test_a_new_command_inherits_settings_without_being_listed():
+    """The property the inversion buys, stated so it cannot quietly go away."""
+    from localtranscription import config as cfg
+
+    assert cfg.reaches("some-future-command")
+    assert not cfg.reaches("diarize")
+
+
+def test_a_colliding_name_still_needs_its_own_table():
+    """--threshold is an RMS gate to a session and a cosine distance to diarize."""
+    assert "diarize" not in _map("threshold = 0.02\n")
+    assert _map("[diarize]\nthreshold = 0.7\n") == {"diarize": {"threshold": 0.7}}
 
 
 def test_a_table_overrides_the_bare_key():
     m = _map("record = true\n\n[dictate]\nrecord = false\n")
     assert m["tui"]["record"] is True
     assert m["dictate"]["record"] is False
-
-
-def test_a_bare_key_never_reaches_diarize():
-    """The reason bare keys are scoped at all.
-
-    --threshold is an RMS gate to a session and a cosine distance to `diarize`. One
-    number cannot be both, and a config that quietly sent 0.02 to the clusterer would
-    collapse every speaker into one.
-    """
-    assert "diarize" not in _map("threshold = 0.02\n")
-    assert _map("[diarize]\nthreshold = 0.7\n") == {"diarize": {"threshold": 0.7}}
 
 
 def test_an_option_belonging_elsewhere_says_where_it_goes():
@@ -1177,7 +1183,7 @@ def _drafter(prev, paying=True):
     """
     from localtranscription.backends import _MlxDraftDecoder
 
-    d = _MlxDraftDecoder(session=None, language="English")
+    d = _MlxDraftDecoder(backend=None, language="English")
     d._prev = list(prev)
     d._paying = paying
     d._index()
@@ -1436,6 +1442,7 @@ def test_tuned_config_is_valid_and_says_what_it_set():
     mapped = _map(text)
     assert mapped["tui"]["backend"] == "mlx"
     assert mapped["cadence"]["first"] == 0.15, "the schedule printer must see it too"
+    assert mapped["transcribe"]["min_speech"] == 0.12, "and so must the file path"
 
 
 def test_bench_lengths_span_the_schedule():
@@ -1500,3 +1507,35 @@ def test_a_capability_cannot_be_claimed_without_the_method():
     # And the factory hands back a re-encoding decoder rather than taking their word.
     for asked in ("x-draft", "stream"):
         assert open_partials(liar, mode=asked, language="English").mode == "reencode"
+
+
+def test_context_is_a_capability_and_the_tui_can_edit_it():
+    """`--context` is session state a front end can change, not a per-call argument.
+
+    Off the Backend protocol, which is one method wide and which every fake in this file
+    implements without knowing anything about context.
+    """
+    from localtranscription.backends import Backend, Biasable
+    from localtranscription.engine import Config
+    from localtranscription.tui import build_tui
+
+    class Plain:
+        name = detail = "plain"
+
+        def transcribe(self, audio, sample_rate, *, language, timestamps):
+            return Transcription(text="x")
+
+    class Biased(Plain):
+        context = "Aristotle, the Lyceum"
+
+    assert isinstance(Plain(), Backend) and not isinstance(Plain(), Biasable)
+    assert isinstance(Biased(), Biasable)
+
+    # The TUI offers a field for it, out of the way until asked for. Reading `.value`
+    # needs a running app (it is a Textual reactive), so this checks what can be checked
+    # without one: the binding exists and the field starts hidden.
+    ui = build_tui(Config(), Biased())
+    assert "k" in [b[0] for b in ui.BINDINGS]
+    assert not ui.context.has_class("open")
+    # And a backend that cannot take context still builds a UI rather than crashing.
+    assert build_tui(Config(), Plain()) is not None

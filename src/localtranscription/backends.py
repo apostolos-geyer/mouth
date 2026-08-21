@@ -143,6 +143,22 @@ class Streaming(Protocol):
 
 
 @runtime_checkable
+class Biasable(Protocol):
+    """A backend whose decoding can be biased toward expected words."""
+
+    context: str
+    """Names, jargon, spellings. Qwen3-ASR biases decoding toward them; "" means no bias.
+
+    An attribute rather than a transcribe() argument, because it describes the session and
+    not one utterance -- and because that is what lets a front end change it while the
+    session runs, which is the whole point of editing it in the TUI.
+
+    Off the Backend protocol for the same reason as the two above: Backend is one method
+    wide, and every fake in the test suite is a backend without being this.
+    """
+
+
+@runtime_checkable
 class Drafting(Protocol):
     """A backend that can decode a partial against the previous one as a draft."""
 
@@ -269,7 +285,9 @@ class TorchBackend:
         device: str = "mps",
         dtype: str = "bf16",
         on_status=None,
+        context: str = "",
     ):
+        self.context = context
         import torch
         from qwen_asr import Qwen3ASRModel
         from transformers.utils import logging as hf_logging
@@ -306,6 +324,7 @@ class TorchBackend:
             audio=(audio, sample_rate),
             language=language,
             return_time_stamps=timestamps,
+            context=self.context,
         )
         r = results[0]
         items = r.time_stamps if r.time_stamps is not None else []
@@ -389,8 +408,11 @@ class _MlxStream:
     mode = "stream"
     incremental = True
 
-    def __init__(self, session, language: str, chunk_sec: float, max_context_sec: float):
-        self._session = session
+    def __init__(self, backend, language: str, chunk_sec: float, max_context_sec: float):
+        # The backend, not its session: `context` is a mutable session setting and a front
+        # end can change it mid-run, so it has to be read when a stream opens rather than
+        # captured when this was built.
+        self._backend = backend
         self._language = language
         self._chunk_sec = chunk_sec
         self._max_context_sec = max_context_sec
@@ -403,12 +425,13 @@ class _MlxStream:
 
     def text(self, pcm: np.ndarray) -> str:
         if self._state is None:
-            self._state = self._session.init_streaming(
+            self._state = self._backend._session.init_streaming(
                 language=self._language,
+                context=self._backend.context,
                 chunk_size_sec=self._chunk_sec,
                 max_context_sec=self._max_context_sec,
             )
-        self._state = self._session.feed_audio(
+        self._state = self._backend._session.feed_audio(
             np.asarray(pcm, dtype=np.float32), self._state
         )
         return (self._state.text or "").strip()
@@ -488,8 +511,9 @@ class _MlxDraftDecoder:
     #: guard was therefore only able to catch a pass that was bad from its first look.
     RECENT = 6
 
-    def __init__(self, session, language: str):
-        self._session = session
+    def __init__(self, backend, language: str):
+        # See _MlxStream: the backend, so a context change lands on the next pass.
+        self._backend = backend
         self._language = language
         self._prev: list[int] = []
         self._ngram: dict = {}
@@ -554,8 +578,9 @@ class _MlxDraftDecoder:
         self._paying = True
         self._index()
 
-        model, tok = self._session.model, self._session.tokenizer
-        dtype = self._session.dtype
+        session = self._backend._session
+        model, tok = session.model, session.tokenizer
+        dtype = session.dtype
         cfg = GenerationConfig(
             max_new_tokens=resolve_max_new_tokens(
                 2048, audio_duration_sec=len(pcm) / SAMPLE_RATE
@@ -567,7 +592,9 @@ class _MlxDraftDecoder:
         ids = mx.array(
             [
                 tok.build_prompt_tokens(
-                    n_audio_tokens=feats.shape[1], language=self._language, context=""
+                    n_audio_tokens=feats.shape[1],
+                    language=self._language,
+                    context=self._backend.context,
                 )
             ]
         )
@@ -695,7 +722,9 @@ class MlxBackend:
         aligner: str | None = DEFAULT_ALIGNER,
         dtype: str = "fp16",
         on_status=None,
+        context: str = "",
     ):
+        self.context = context
         try:
             import mlx.core as mx  # ty: ignore[unresolved-import]
             from mlx_qwen3_asr import ForcedAligner, Session
@@ -740,6 +769,7 @@ class MlxBackend:
         r = self._session.transcribe(
             (audio, sample_rate),
             language=language,
+            context=self.context,
             return_timestamps=timestamps,
             # Instance, never True/str -- see __init__.
             forced_aligner=self._aligner if timestamps else None,
@@ -756,10 +786,10 @@ class MlxBackend:
     def open_stream(
         self, *, language: str, chunk_sec: float = 2.0, max_context_sec: float = 30.0
     ) -> _MlxStream:
-        return _MlxStream(self._session, language, chunk_sec, max_context_sec)
+        return _MlxStream(self, language, chunk_sec, max_context_sec)
 
     def open_draft(self, *, language: str) -> _MlxDraftDecoder:
-        return _MlxDraftDecoder(self._session, language)
+        return _MlxDraftDecoder(self, language)
 
 
 # ---------------------------------------------------------------- registry
@@ -822,6 +852,7 @@ def load_backend(
     on_status=None,
     warmup: bool = True,
     align: bool = True,
+    context: str = "",
 ) -> Backend:
     """Load a backend. align=False skips the forced aligner entirely.
 
@@ -838,7 +869,13 @@ def load_backend(
     aligner = resolve_checkpoint(aligner or DEFAULT_ALIGNER) if align else None
     dtype = resolve_dtype(name, dtype)
 
-    kwargs = {"model": model, "aligner": aligner, "dtype": dtype, "on_status": on_status}
+    kwargs = {
+        "model": model,
+        "aligner": aligner,
+        "dtype": dtype,
+        "on_status": on_status,
+        "context": context,
+    }
     if cls.takes_device:
         kwargs["device"] = device
     # takes_device is a runtime discriminator over two constructors that genuinely differ:

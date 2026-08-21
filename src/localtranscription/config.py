@@ -8,10 +8,12 @@ but by construction, because this feeds Click's `default_map` and the layering h
 inside the parser. There is no per-flag plumbing to forget and no "was this passed?"
 sentinel to get wrong, which is the failure mode of every hand-rolled version of this.
 
-Bare keys apply to the commands that listen, plus the two that describe them -- `tune`
-measures the stack the others run, and `cadence` prints what a schedule costs, so both
-are wrong unless they see the same settings. Anything else takes a table named after the
-command, because the same flag name does not mean the same thing everywhere: `--threshold` is an RMS gate to a session and a cosine distance to `diarize`,
+A bare key reaches every command that has that option, which is almost all of them: a
+setting for "how this machine transcribes" is wrong for `lt tui` and right for `lt cli`
+only by accident. The exceptions are named in EXCLUDED below and there are three, each
+one a command where a flag name means something else -- `--threshold` is an RMS gate to a
+session and a cosine distance to `diarize`, and a bare key reaching both would collapse
+every speaker into one. Those take a table named after the command: `--threshold` is an RMS gate to a session and a cosine distance to `diarize`,
 and a bare key that reached both would quietly ruin one of them.
 
     backend = "mlx"
@@ -36,33 +38,41 @@ from typing import Any
 
 from . import paths
 
-#: Which commands a bare key applies to: the ones that open a session and share an option
-#: vocabulary, plus the two that exist to describe them: `tune`, which measures the stack
-#: the others run, and `cadence`, which prints what a partial schedule costs. Both were
-#: omitted at first and both were wrong for it -- tune benchmarked stock torch while the
-#: config pointed every real command at a quantised MLX checkpoint, and `lt cadence`
-#: simulated the shipped schedule rather than the one configured.
-#: See the module docstring for why this still isn't "all of them".
-SESSION = ("tui", "cli", "dictate", "tune", "cadence")
+#: Commands a bare key must NOT reach, and why -- the only place a flag name means
+#: something different from what it means everywhere else.
+#:
+#: This used to be the other way round: a hand-written list of commands bare keys *did*
+#: reach. Three commands were added after it and all three were wrong for it -- `tune`
+#: benchmarked stock torch while the config pointed everything else at a quantised MLX
+#: checkpoint, `cadence` printed the shipped schedule rather than the configured one, and
+#: `transcribe` gated speech at 0.3s against a config asking for 0.15s. Each was a silent
+#: wrong answer, not a failure, and each needed a fifth copy of the list to be updated.
+#:
+#: Inverted, a new command inherits the settings by default and only an actual name
+#: collision needs writing down -- which is a fact about the flag, visible where the flag
+#: is declared, rather than a fact about the roster.
+EXCLUDED = {
+    "diarize": "--threshold is a cosine distance between voices, not an RMS gate, and "
+    "--out is one RTTM file rather than a directory",
+    "quantize": "--model is the checkpoint to convert and --out where to write it; both "
+    "are the opposite of what they mean to a session",
+    "models": "--dir is where checkpoints are looked for, not where anything is written",
+}
 
 
-def session_list() -> str:
-    """The SESSION tuple as prose, so no doc string has to restate it.
-
-    It was written out by hand in five places and had already drifted in one of them.
-    """
-    names = [f"`lt {c}`" for c in SESSION]
-    return ", ".join(names[:-1]) + f" and {names[-1]}"
+def reaches(command: str) -> bool:
+    """Whether a bare key is allowed to reach this command."""
+    return command not in EXCLUDED
 
 
 _TEMPLATE = """\
 # localtranscription -- defaults for the flags you'd otherwise type every time.
 # A flag on the command line still beats anything in here.
 #
-# Bare keys below apply to:
-#   {session}
-# Every other command takes a table. TOML rule worth knowing: bare keys must come
-# before the first [table] or they land inside it.
+# Bare keys below reach every command that has the option. A few commands read a
+# flag name differently ({excluded}) and take a table instead.
+# TOML rule worth knowing: bare keys must come before the first [table] or they
+# land inside it.
 
 # backend = "mlx"                   # torch | mlx            (`lt backends`)
 # model = "qwen3-asr-1.7b-q8g64"    # HF repo id, or a local checkpoint from `lt quantize`
@@ -163,7 +173,7 @@ def default_map(
     tables = {k: v for k, v in data.items() if isinstance(v, dict)}
     out: dict[str, dict[str, Any]] = {}
 
-    shared = {alias for cmd in SESSION for alias in params.get(cmd, {})}
+    shared = {alias for cmd, al in params.items() if reaches(cmd) for alias in al}
     for key, value in bare.items():
         name = _norm(key)
         if name not in shared:
@@ -172,8 +182,9 @@ def default_map(
             elsewhere = sorted(c for c, al in params.items() if name in al)
             if elsewhere:
                 raise ConfigError(
-                    f"{_flag(name)} belongs to `lt {elsewhere[0]}`, which needs its own "
-                    f"table: put it under [{elsewhere[0]}]."
+                    f"{_flag(name)} belongs to `lt {elsewhere[0]}`, where it means "
+                    f"something else ({EXCLUDED[elsewhere[0]]}). Put it under "
+                    f"[{elsewhere[0]}] if that is what you meant."
                 )
             if name in RENAMED:
                 raise ConfigError(
@@ -181,9 +192,8 @@ def default_map(
                     f"not a flag beside it."
                 )
             raise ConfigError(f"unknown option {_flag(name)}.{_suggest(key, shared)}")
-        for cmd in SESSION:
-            alias = params.get(cmd, {})
-            if name in alias:
+        for cmd, alias in params.items():
+            if reaches(cmd) and name in alias:
                 out.setdefault(cmd, {})[alias[name]] = _value(value)
 
     for cmd, table in tables.items():
@@ -200,7 +210,7 @@ def default_map(
 
 def template() -> str:
     """The starter config, with the command list filled in from SESSION."""
-    return _TEMPLATE.format(session="  ".join(f"lt {c}" for c in SESSION))
+    return _TEMPLATE.format(excluded=", ".join(f"lt {c}" for c in sorted(EXCLUDED)))
 
 
 def write_template(path: Path) -> None:

@@ -149,6 +149,13 @@ DTYPE = typer.Option(
 MIC = typer.Option(None, "--mic", "-m", help="Input device index.")
 WAV = typer.Option(None, "--wav", help="Replay a 16kHz wav instead of the mic.")
 THRESH = typer.Option(None, "--threshold", "-t", help="RMS VAD threshold [dim](auto)[/].")
+CONTEXT = typer.Option(
+    "",
+    "--context",
+    metavar="TEXT",
+    help="Words to expect: names, jargon, spellings. "
+    "[dim]The model biases decoding toward them.[/]",
+)
 MINSPEECH = typer.Option(
     MIN_SPEECH_SEC,
     "--min-speech",
@@ -205,6 +212,7 @@ def _config(
     partials,
     stream_chunk,
     min_speech=MIN_SPEECH_SEC,
+    context="",
 ) -> Config:
     """Validate CLI values and build a Config.
 
@@ -251,6 +259,7 @@ def _config(
         partials=partials,
         stream_chunk_sec=stream_chunk,
         min_speech=min_speech,
+        context=context,
     )
 
 
@@ -869,6 +878,133 @@ def _tune_measure(cfg, backend_obj, samples):
 
 
 @app.command()
+def transcribe(
+    audio_file: Path = typer.Argument(
+        ..., help="Audio to transcribe (wav, flac, m4a, mp3, mp4)."
+    ),
+    out: Path = OUT,
+    language: str = LANG,
+    context: str = CONTEXT,
+    device: str = DEVICE,
+    backend: str = BACKEND,
+    model: str = MODEL,
+    aligner: str = ALIGNER,
+    dtype: str = DTYPE,
+    threshold: float | None = THRESH,
+    min_speech: float = MINSPEECH,
+    record: bool = typer.Option(
+        False, "--record/--no-record", help="Save per-utterance audio + manifest."
+    ),
+    record_dir: Path = RECDIR,
+):
+    """Transcribe a file, as fast as the machine can [dim](not in real time)[/].
+
+    The same VAD, the same model, the same outputs as a live session — but the audio is
+    already on disk, so nothing waits on a clock. Measured on an M3 Max with the 8-bit
+    checkpoint, finals run at about [b]12x realtime[/b].
+
+    Partials are off: there is nobody watching text land, and provisional passes are the
+    expensive half of a live session.
+    """
+    cfg = _config(
+        out=out,
+        language=language,
+        device=device,
+        mic=None,
+        wav=audio_file,
+        threshold=threshold,
+        first=0.0,
+        growth=1.6,
+        max_gap=3.0,
+        record=record,
+        record_dir=record_dir,
+        backend=backend,
+        model=model,
+        aligner=aligner,
+        dtype=dtype,
+        partials="reencode",
+        stream_chunk=2.0,
+        min_speech=min_speech,
+        context=context,
+    )
+    cfg.realtime = False
+    if not audio_file.exists():
+        raise typer.BadParameter(f"{audio_file}: no such file")
+
+    backend_obj = _load(cfg)
+
+    from rich.progress import (
+        BarColumn,
+        Progress,
+        TaskProgressColumn,
+        TextColumn,
+        TimeElapsedColumn,
+    )
+
+    bar = Progress(
+        TextColumn("[dim]{task.description}[/]"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    )
+
+    class Hooks:
+        def __init__(self):
+            self.job = None
+            self.seconds = 0.0
+            self.t0 = 0.0
+
+        def source(self, src):
+            self.seconds = getattr(src, "seconds", 0.0)
+
+        def status(self, msg):
+            console.print(f"[dim]{msg}…[/]", highlight=False)
+
+        def ready(self, threshold):
+            console.print(
+                f"[dim]{self.seconds / 60:.1f} min · VAD threshold {threshold:.5f}[/]"
+            )
+            self.t0 = time.monotonic()
+            self.job = bar.add_task("transcribing", total=max(self.seconds, 0.001))
+            bar.start()
+
+        def bind_stop(self, stop):
+            signal.signal(signal.SIGINT, lambda *_: stop.set())
+
+        def level(self, rms, in_speech):
+            pass
+
+        def interim(self, seg):
+            pass
+
+        def segment(self, seg):
+            if self.job is not None:
+                # Progress is where the audio has been consumed to, which is the end of
+                # the utterance just finished -- not a count of utterances, whose total
+                # nobody knows until the file runs out.
+                bar.update(self.job, completed=min(seg.start + seg.audio_sec, self.seconds))
+
+        def error(self, offset, msg):
+            console.print(f"[red]{fmt_clock(offset)}  transcribe failed: {msg}[/]")
+
+    hooks = Hooks()
+    try:
+        result = run_session(cfg, hooks, backend=backend_obj)
+    finally:
+        bar.stop()
+
+    took = time.monotonic() - hooks.t0 if hooks.t0 else 0.0
+    if took > 0 and hooks.seconds:
+        console.print(
+            f"[dim]{hooks.seconds / 60:.1f} min in {took:.1f}s · "
+            f"{hooks.seconds / took:.0f}x realtime[/]"
+        )
+    _report(cfg, *result)
+
+
+@app.command()
 def cadence(
     length: float = typer.Argument(20.0, help="Utterance length to simulate, in seconds."),
     first: float = FIRST,
@@ -913,6 +1049,7 @@ def tui(
     partials: str = PARTIALS,
     stream_chunk: float = CHUNKSEC,
     min_speech: float = MINSPEECH,
+    context: str = CONTEXT,
 ):
     """Full-screen live view [dim](q quit · p pause · c clear)[/]."""
     from .tui import build_tui
@@ -936,6 +1073,7 @@ def tui(
         partials=partials,
         stream_chunk=stream_chunk,
         min_speech=min_speech,
+        context=context,
     )
     # Load before entering full-screen: subprocess spawning breaks under Textual's stdout.
     ui = build_tui(cfg, _load(cfg))
@@ -967,6 +1105,7 @@ def cli(
     partials: str = PARTIALS,
     stream_chunk: float = CHUNKSEC,
     min_speech: float = MINSPEECH,
+    context: str = CONTEXT,
 ):
     """Stream transcriptions to stdout [dim](Ctrl-C to stop)[/]."""
     from rich.live import Live
@@ -991,6 +1130,7 @@ def cli(
         partials=partials,
         stream_chunk=stream_chunk,
         min_speech=min_speech,
+        context=context,
     )
 
     # Provisional text rewrites itself in place, which needs a terminal that can take the
@@ -1109,6 +1249,7 @@ def dictate(
     dtype: str = DTYPE,
     device: str = DEVICE,
     min_speech: float = MINSPEECH,
+    context: str = CONTEXT,
 ):
     """Speech to stdout, then exit. [dim]A surface to compose on.[/]
 
@@ -1158,6 +1299,7 @@ def dictate(
         partials="reencode",
         stream_chunk=2.0,
         min_speech=min_speech,
+        context=context,
     )
     # Dictation wants a string, not a transcript. This is what skips loading the 0.6B
     # aligner as well as running it -- see load_backend(align=...).

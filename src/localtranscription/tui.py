@@ -16,6 +16,7 @@ from typing import ClassVar
 from rich.markup import escape
 from rich.text import Text
 
+from .backends import Biasable
 from .engine import Segment, run_session
 from .formats import fmt_clock
 
@@ -90,7 +91,7 @@ def sparkline(values, threshold: float, width: int) -> str:
 def build_tui(cfg, backend):
     from textual.app import App, ComposeResult
     from textual.containers import Vertical, VerticalScroll
-    from textual.widgets import Footer, Static
+    from textual.widgets import Footer, Input, Static
 
     class Line(Static):
         """One utterance. Lives as a partial, then hardens into the final."""
@@ -183,11 +184,16 @@ def build_tui(cfg, backend):
         }}
         .line {{ height: auto; padding: 0 0 1 0; }}
         Footer {{ background: $surface; }}
+        #context {{
+            margin: 0 1; border: round {BLUE}; display: none;
+        }}
+        #context.open {{ display: block; }}
         """
         BINDINGS: ClassVar = [
             ("q", "quit", "quit"),
             ("p", "pause", "pause"),
             ("c", "clear", "clear"),
+            ("k", "context", "context"),
         ]
 
         METER_W = 34
@@ -199,6 +205,16 @@ def build_tui(cfg, backend):
             self.stats = Static("", id="stats")
             self.transcript = Transcript()
             self.hud = Vertical(self.meter, self.stats, id="hud")
+            # Words the model should expect. Hidden until `k`, because it is empty far
+            # more often than not and an always-visible empty field is just less screen.
+            # No `value=` here: Input's value is a Textual reactive, and setting one
+            # fires a watcher that needs a running app. build_tui runs before the app
+            # exists (loading spawns subprocesses, which Textual's stdout breaks), so
+            # `lt tui --context "..."` crashed on construction. Seeded in on_mount.
+            self.context = Input(
+                placeholder="names, jargon, spellings the model should expect",
+                id="context",
+            )
 
             self.rms = 0.0
             self.in_speech = False
@@ -218,10 +234,38 @@ def build_tui(cfg, backend):
 
         def compose(self) -> ComposeResult:
             yield self.hud
+            yield self.context
             yield self.transcript
             yield Footer()
 
+        def action_context(self):
+            """Show the context field and focus it, or put it away again."""
+            open_now = not self.context.has_class("open")
+            self.context.set_class(open_now, "open")
+            if open_now:
+                self.context.focus()
+            else:
+                self.transcript.focus()
+
+        def on_input_submitted(self, event: Input.Submitted):
+            """Enter applies it. Live, because that is the point of editing it here.
+
+            The backend reads `context` when it decodes, so this lands on the next
+            utterance -- not the one in flight, which is already through the encoder.
+            """
+            if not isinstance(backend, Biasable):
+                self.transcript.note("this backend cannot take context", YELLOW)
+                return
+            backend.context = event.value.strip()
+            self.context.remove_class("open")
+            self.transcript.focus()
+            self.transcript.note(
+                f"context: {backend.context}" if backend.context else "context cleared"
+            )
+
         def on_mount(self):
+            if isinstance(backend, Biasable) and backend.context:
+                self.context.value = backend.context
             self.hud.border_title = "input"
             self.transcript.border_title = "transcript"
             self.title = "localtranscription"
