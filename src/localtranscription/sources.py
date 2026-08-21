@@ -139,6 +139,12 @@ class WavSource:
         """How much audio there is. Known here and nowhere else without decoding twice."""
         return len(self._audio) / SAMPLE_RATE
 
+    @property
+    def audio(self) -> np.ndarray:
+        """The decoded file. Exposed so a caller that also wants to diarize it does not
+        decode a second time -- an hour of audio is ~4s of PyAV and 460 MB of float32."""
+        return self._audio
+
     def calibrate(self, seconds: float = 1.0, stop=None) -> float:
         head = self._audio[: int(seconds * SAMPLE_RATE)]
         if head.size == 0:

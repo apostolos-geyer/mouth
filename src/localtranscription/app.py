@@ -291,17 +291,20 @@ def _load(cfg: Config, out: Console = console, on_status=None):
         raise typer.BadParameter(str(e)) from e
 
 
-def _report(cfg: Config, segments, words, recorder):
+def _report(cfg: Config, segments, words, recorder, turns=None):
     if not segments:
         console.print("[yellow]Nothing transcribed.[/]")
         return
     # The session owns its name. Letting write_outputs invent one stamped it at a
     # different moment from the recorder's directory, so the two artifacts for one
     # session could not be matched up by name.
-    base = write_outputs(cfg.out_dir, segments, words, stem=cfg.stamped())
+    base = write_outputs(cfg.out_dir, segments, words, stem=cfg.stamped(), turns=turns)
+    kinds = "txt,words.json,srt,timestamped.md"
+    if turns:
+        kinds += ",rttm,speakers.json,speakers.md"
     console.print(
         f"\n[green]{len(segments)}[/] utterances, [green]{len(words)}[/] timed words"
-        f" → [b]{base}[/b].{{txt,words.json,srt,timestamped.md}}"
+        f" → [b]{base}[/b].{{{kinds}}}"
     )
     if recorder:
         console.print(f"[dim]recorded {recorder.n} utterances → {recorder.dir}[/]")
@@ -892,6 +895,15 @@ def transcribe(
     dtype: str = DTYPE,
     threshold: float | None = THRESH,
     min_speech: float = MINSPEECH,
+    speakers: bool = typer.Option(
+        False, "--speakers", help="Also work out who spoke when, and label the transcript."
+    ),
+    num_speakers: int | None = typer.Option(
+        None,
+        "--num-speakers",
+        "-n",
+        help="Exact speaker count, if you know it [dim](implies --speakers)[/].",
+    ),
     record: bool = typer.Option(
         False, "--record/--no-record", help="Save per-utterance audio + manifest."
     ),
@@ -905,6 +917,10 @@ def transcribe(
 
     Partials are off: there is nobody watching text land, and provisional passes are the
     expensive half of a live session.
+
+    With [b]--speakers[/b] it also diarizes and labels the transcript, which is the whole
+    job for a recording of more than one person. Same decode, same pass over the file:
+    running `lt diarize` afterwards would re-read and re-analyse it.
     """
     cfg = _config(
         out=out,
@@ -955,9 +971,12 @@ def transcribe(
             self.job = None
             self.seconds = 0.0
             self.t0 = 0.0
+            self.audio = None
 
         def source(self, src):
             self.seconds = getattr(src, "seconds", 0.0)
+            # Kept so --speakers can diarize what was already decoded.
+            self.audio = getattr(src, "audio", None)
 
         def status(self, msg):
             console.print(f"[dim]{msg}…[/]", highlight=False)
@@ -1001,7 +1020,44 @@ def transcribe(
             f"[dim]{hooks.seconds / 60:.1f} min in {took:.1f}s · "
             f"{hooks.seconds / took:.0f}x realtime[/]"
         )
-    _report(cfg, *result)
+
+    turns = None
+    if speakers or num_speakers is not None:
+        turns = _diarize_audio(hooks.audio, num_speakers)
+    _report(cfg, *result, turns=turns)
+
+
+def _diarize_audio(audio, num_speakers: int | None):
+    """Who spoke when, over audio that is already decoded and in memory."""
+    from .audio import SAMPLE_RATE
+    from .diarize.coreml import DiarizationUnavailable
+    from .diarize.offline import OfflineConfig, OfflineDiarizer
+
+    if audio is None:
+        raise typer.BadParameter("--speakers needs a file, not a live source.")
+    try:
+        cfg = OfflineConfig(num_speakers=num_speakers)
+        with console.status("[dim]loading diarization models…[/]") as st:
+            engine = OfflineDiarizer(cfg, on_status=lambda m: st.update(f"[dim]{m}…[/]"))
+        dur = len(audio) / SAMPLE_RATE
+        with console.status(f"[dim]working out who spoke, {dur / 60:.1f} min…[/]"):
+            t0 = time.monotonic()
+            turns = engine.diarize(audio, SAMPLE_RATE)
+            took = time.monotonic() - t0
+    except (DiarizationUnavailable, ValueError) as e:
+        raise typer.BadParameter(str(e)) from e
+
+    found = sorted({t.speaker for t in turns})
+    console.print(
+        f"[green]{len(found)}[/] speakers, [green]{len(turns)}[/] turns "
+        f"[dim]({dur / took:.0f}x realtime)[/]"
+    )
+    for spk in found:
+        held = sum(t.duration for t in turns if t.speaker == spk)
+        console.print(
+            f"  [cyan]speaker {spk}[/]  {held / 60:5.2f} min  [dim]{held / dur * 100:4.1f}%[/]"
+        )
+    return turns
 
 
 @app.command()

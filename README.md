@@ -44,6 +44,7 @@ lt tui                    # full-screen live view (q quit · p pause · c clear)
 lt cli                    # streaming output to stdout
 lt dictate                # speech to stdout, then exit (--hold for hold-to-talk)
 lt transcribe FILE        # a file, as fast as the machine can (~17x realtime)
+lt transcribe FILE --speakers   # ...and label who said what
 lt devices                # list microphones
 lt languages              # list supported ASR languages
 lt backends               # which inference backends are installed
@@ -101,6 +102,37 @@ provisional passes are the expensive half of a live session.
 
 `lt cli --wav` still exists and still paces to the clock — that is for *watching* a replay,
 which is a different thing from wanting the transcript.
+
+```sh
+lt transcribe interview.m4a --speakers      # or -n 2 if you know the count
+```
+
+adds `.rttm`, `.speakers.json` (every word with a speaker) and `.speakers.md`:
+
+```
+**speaker 0**  [00:04]
+Not, not super at at liberty. But I'll tell you about it.
+
+**speaker 1**  [00:15]
+Okay.
+```
+
+One decode and one pass over the file — running `lt diarize` afterwards would re-read and
+re-analyse it, and leave you pasting a generated filename between two commands.
+
+The prose is attributed per **utterance** and rendered from the utterance's own text, which
+took two goes to get right. Per *word* (the obvious choice, since only words carry
+timings), every short function word landing in a gap between turns came back unattributed
+and broke the paragraph — one clause became eight blocks, three of them the single word
+"it". And rebuilt from the aligner's word list, `"Not, not super at at liberty."` reads
+`"Not not super at at liberty"`, because the word list has no punctuation. Word-level
+labels are right for `.speakers.json`, where something computes with them, and wrong for
+prose.
+
+An utterance with the same voice either side of it is folded into that voice — the turns
+don't tile the recording, so a short reply inside someone's paragraph comes back
+unattributed. Between *different* speakers it stays unattributed, which is the case where
+guessing would invent an attribution the audio doesn't support.
 
 ## Context
 

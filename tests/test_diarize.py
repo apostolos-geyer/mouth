@@ -286,3 +286,71 @@ def test_excerpt_attributes_every_labelled_turn_correctly(excerpt_turns):
 
     assert all(len(v) == 1 for v in dominant.values()), "a speaker changed id mid-recording"
     assert dominant["C"] != dominant["S"], "the two speakers collapsed into one"
+
+
+# ---------------------------------------------------------------- speaker transcript
+
+
+def _turn(start, end, speaker):
+    from localtranscription.diarize.offline import Turn
+
+    return Turn(start, end, speaker)
+
+
+def _words(spec):
+    """spec: [(text, start)] -> aligned words, half a second each."""
+    return [{"text": t, "start": s, "end": s + 0.5} for t, s in spec]
+
+
+def test_speaker_transcript_keeps_the_sentence_intact():
+    """Rendered from the utterance's own text, not rebuilt from aligner words.
+
+    The word list carries no punctuation, so a transcript rebuilt from it reads "Not not
+    super at at liberty" where the model wrote "Not, not super at at liberty."
+    """
+    from localtranscription.formats import speaker_md
+
+    md = speaker_md(
+        [(0.0, "Not, not super at at liberty.")],
+        _words([("Not", 0.0), ("not", 0.6), ("super", 1.2)]),
+        [_turn(0.0, 3.0, 0)],
+    )
+    assert "Not, not super at at liberty." in md
+    assert "**speaker 0**" in md
+
+
+def test_speaker_transcript_groups_a_run_rather_than_fragmenting_it():
+    """Attribution is per utterance, so a function word landing in a gap between turns
+    cannot break a paragraph into one block per word -- which is what per-word grouping
+    did: one clause became eight blocks, three of them the single word "it"."""
+    from localtranscription.formats import speaker_md
+
+    md = speaker_md(
+        [(0.0, "One."), (1.0, "Two."), (2.0, "Three.")],
+        # The middle utterance's word falls in a gap and is unattributed.
+        _words([("One", 0.0), ("Two", 1.0), ("Three", 2.0)]),
+        [_turn(0.0, 0.9, 0), _turn(1.9, 3.0, 0)],
+    )
+    assert md.count("**speaker 0**") == 1, md
+    assert "One. Two. Three." in md
+
+
+def test_a_mixed_utterance_goes_to_whoever_holds_most_of_it():
+    from localtranscription.formats import speaker_md
+
+    md = speaker_md(
+        [(0.0, "Mostly mine but you got a word in.")],
+        _words([("Mostly", 0.0), ("mine", 0.6), ("but", 1.2), ("you", 5.0)]),
+        [_turn(0.0, 2.0, 0), _turn(4.9, 6.0, 1)],
+    )
+    assert "**speaker 0**" in md and "**speaker 1**" not in md
+
+
+def test_an_utterance_nobody_claims_says_so():
+    """Silence between speakers is a real answer; guessing invents an attribution."""
+    from localtranscription.formats import speaker_md
+
+    md = speaker_md(
+        [(0.0, "Who said this?")], _words([("Who", 0.0)]), [_turn(9.0, 10.0, 0)]
+    )
+    assert "**unattributed**" in md

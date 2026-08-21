@@ -66,8 +66,81 @@ def words_to_timestamped_md(items, group_seconds=20):
     return "\n".join(lines)
 
 
-def write_outputs(out_dir: Path, segments, words, stem=None) -> Path | None:
-    """Write the same four artifacts the offline tool produced."""
+def speaker_md(segments, words, turns) -> str:
+    """A transcript grouped by who was talking.
+
+    Attributed per *utterance*, not per word, and rendered from the utterance's own text.
+    Both halves of that matter, and the first version got both wrong:
+
+    Per word, every short function word that happened to land in a gap between turns came
+    back unattributed and broke the paragraph -- one clause became eight blocks, three of
+    them the single word "it". Word-level labels are the right answer for `.speakers.json`,
+    where something is going to compute with them, and the wrong one for prose.
+
+    From the utterance's text, because the aligner's word list has no punctuation: rebuilt
+    from words, "Not, not super at at liberty." reads "Not not super at at liberty". The
+    utterance already holds the sentence as the model wrote it.
+
+    An utterance whose words are split across speakers goes to whoever holds most of it.
+    The VAD cuts on silence and not on turns, so a genuine interruption mid-utterance
+    exists; it is rare in practice and `.speakers.json` still has the detail.
+    """
+    from .diarize import label_words
+
+    labelled = label_words(words, turns) if words else []
+    bounds = [start for start, _ in segments] + [float("inf")]
+
+    owned = []
+    for i, (start, text) in enumerate(segments):
+        tally: dict = {}
+        for w in labelled:
+            if start <= w["start"] < bounds[i + 1] and w.get("speaker") is not None:
+                tally[w["speaker"]] = tally.get(w["speaker"], 0) + 1
+        owned.append([max(tally, key=lambda k: tally[k]) if tally else None, start, text])
+
+    # An unclaimed utterance with the same voice either side of it belongs to that voice.
+    # The diarizer's turns do not tile the recording -- it declines to place low-energy
+    # frames -- so a short reply inside one person's paragraph comes back unattributed and
+    # would otherwise cut the paragraph in three. Between *different* speakers it stays
+    # unattributed, which is the case where guessing would invent an attribution.
+    for i, row in enumerate(owned):
+        if row[0] is not None:
+            continue
+        before = next((r[0] for r in reversed(owned[:i]) if r[0] is not None), None)
+        after = next((r[0] for r in owned[i + 1 :] if r[0] is not None), None)
+        if before is not None and before == after:
+            row[0] = before
+
+    lines, run, who = [], [], object()
+    for spk, start, text in owned:
+        if spk != who:
+            if run:
+                lines += [
+                    f"**{_who(who)}**  [{fmt_clock(run[0][0])}]",
+                    " ".join(t for _, t in run),
+                    "",
+                ]
+            run, who = [], spk
+        run.append((start, text))
+    if run:
+        lines += [
+            f"**{_who(who)}**  [{fmt_clock(run[0][0])}]",
+            " ".join(t for _, t in run),
+            "",
+        ]
+    return "\n".join(lines)
+
+
+def _who(speaker) -> str:
+    return "unattributed" if speaker is None else f"speaker {speaker}"
+
+
+def write_outputs(out_dir: Path, segments, words, stem=None, turns=None) -> Path | None:
+    """Write the same four artifacts the offline tool produced.
+
+    With `turns`, three more: the RTTM every diarization scorer reads, the words with a
+    speaker attached, and a transcript grouped by speaker.
+    """
     segments = sorted(segments, key=lambda s: s[0])
     words = sorted(words, key=lambda w: w["start"])
     if not segments:
@@ -87,6 +160,18 @@ def write_outputs(out_dir: Path, segments, words, stem=None) -> Path | None:
         (out_dir / f"{stem}.timestamped.md").write_text(
             words_to_timestamped_md(words), encoding="utf-8"
         )
+    if turns:
+        from .diarize import label_words
+
+        (out_dir / f"{stem}.rttm").write_text(rttm(turns, stem), encoding="utf-8")
+        if words:
+            labelled = label_words(words, turns)
+            (out_dir / f"{stem}.speakers.json").write_text(
+                json.dumps(labelled, indent=2), encoding="utf-8"
+            )
+            (out_dir / f"{stem}.speakers.md").write_text(
+                speaker_md(segments, words, turns), encoding="utf-8"
+            )
     return out_dir / stem
 
 
