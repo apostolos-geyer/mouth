@@ -165,7 +165,9 @@ def write_outputs(out_dir: Path, segments, words, stem=None, turns=None) -> Path
 
         (out_dir / f"{stem}.rttm").write_text(rttm(turns, stem), encoding="utf-8")
         if words:
-            labelled = label_words(words, turns)
+            # Words aligned per speaker block already carry one; re-deriving it from
+            # timings would be strictly worse than what construction gave us.
+            labelled = words if all("speaker" in w for w in words) else label_words(words, turns)
             (out_dir / f"{stem}.speakers.json").write_text(
                 json.dumps(labelled, indent=2), encoding="utf-8"
             )

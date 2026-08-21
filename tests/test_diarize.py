@@ -354,3 +354,58 @@ def test_an_utterance_nobody_claims_says_so():
         [(0.0, "Who said this?")], _words([("Who", 0.0)]), [_turn(9.0, 10.0, 0)]
     )
     assert "**unattributed**" in md
+
+
+# ---------------------------------------------------------------- speaker blocks
+
+
+def test_blocks_join_one_voice_and_split_on_the_other():
+    from localtranscription.diarize import speaker_blocks
+
+    blocks = speaker_blocks(
+        [(0.0, "Hi."), (2.0, "Still me."), (4.0, "Now me.")],
+        [_turn(0, 1.9, 0), _turn(2, 3.9, 0), _turn(4, 6, 1)],
+        6.0,
+    )
+    assert [(b[0], b[3]) for b in blocks] == [(0, "Hi. Still me."), (1, "Now me.")]
+    # A block spans from its first utterance to the end of its last -- that span is what
+    # gets handed to the aligner, so it has to be contiguous and in recording time.
+    assert blocks[0][1] == 0.0 and blocks[0][2] == 4.0
+    assert blocks[1][1] == 4.0 and blocks[1][2] == 6.0
+
+
+def test_a_block_nobody_claims_stays_its_own():
+    """Silence between speakers is a real answer here too."""
+    from localtranscription.diarize import speaker_blocks
+
+    blocks = speaker_blocks(
+        [(0.0, "Mine."), (2.0, "Nobody's."), (4.0, "Mine again.")],
+        [_turn(0, 1.9, 0), _turn(4, 6, 0)],
+        6.0,
+    )
+    assert [b[0] for b in blocks] == [0, None, 0]
+
+
+def test_blocks_of_nothing():
+    from localtranscription.diarize import speaker_blocks
+
+    assert speaker_blocks([], [_turn(0, 1, 0)], 1.0) == []
+    assert [b[0] for b in speaker_blocks([(0.0, "Hi.")], [], 1.0)] == [None]
+
+
+def test_standalone_alignment_is_a_capability_not_a_requirement():
+    """Timing known text over a chosen span is what lets a whole block be timed at once.
+
+    Kept off Backend, like the other three: a backend that only transcribes is still a
+    backend, and every fake in these tests is one.
+    """
+    from localtranscription.backends import Aligning, Backend
+
+    class Plain:
+        name = detail = "plain"
+
+        def transcribe(self, audio, sample_rate, *, language, timestamps):
+            return None
+
+    assert isinstance(Plain(), Backend)
+    assert not isinstance(Plain(), Aligning)

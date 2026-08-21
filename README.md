@@ -159,6 +159,22 @@ Yeah.
 That reordering is why `--speakers` decodes the file before the session starts and hands
 the audio to it, rather than reading it twice.
 
+**Word timings then come from aligning each block once**, rather than each utterance as it
+lands. A block is one voice over a contiguous span, so it aligns as a single piece: word
+timings run continuously across it, and every word carries that speaker because of where
+it was aligned rather than by matching timings against turns afterwards. On the interview,
+that took unattributed words from **406 of 6505 (6.2%) to zero**.
+
+Timings are absolute against the full recording, which is the point if you are scrubbing a
+timeline or popping words up over video. Checked on the 28-minute interview: 6505 words
+spanning 0.00s–1680.33s of a 1680s file, monotonic, none inverted or out of range. Against
+the reference SRT's own timings, 145 uniquely-matched words land a median +1.38s from
+their cue's start — which is what correct looks like, since a cue there averages 3.03s and
+a word inside one starts partway through it.
+
+`.words.json` and `.speakers.json` carry `{text, start, end, speaker}` per word, which is
+what a caption renderer wants.
+
 The prose is attributed per **utterance** and rendered from the utterance's own text, which
 took two goes to get right. Per *word* (the obvious choice, since only words carry
 timings), every short function word landing in a gap between turns came back unattributed

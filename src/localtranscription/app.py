@@ -24,6 +24,7 @@ from .backends import (
     DEFAULT_ASR,
     DTYPES,
     PARTIAL_MODES,
+    Aligning,
     BackendUnavailable,
     available,
     describe_checkpoint,
@@ -264,7 +265,7 @@ def _config(
     )
 
 
-def _load(cfg: Config, out: Console = console, on_status=None):
+def _load(cfg: Config, out: Console = console, on_status=None, align: bool | None = None):
     """Load the chosen backend behind a status spinner, failing with a usable message.
 
     on_status replaces the spinner rather than adding to it: a caller whose stderr carries
@@ -279,8 +280,10 @@ def _load(cfg: Config, out: Console = console, on_status=None):
             device=cfg.device,
             dtype=cfg.dtype,
             on_status=status,
-            # No aligner load at all when nothing will ask for word timings.
-            align=cfg.timestamps,
+            # No aligner load at all when nothing will ask for word timings. The override
+            # is for a caller that wants the aligner without running it per utterance --
+            # `lt transcribe --speakers` times whole speaker blocks afterwards instead.
+            align=cfg.timestamps if align is None else align,
         )
 
     try:
@@ -969,7 +972,16 @@ def transcribe(
         console.print(f"  [dim]{len(cfg.cuts)} speaker changes to cut on[/]")
         source = make_source(None, audio_file, realtime=False, audio=audio).open()
 
-    backend_obj = _load(cfg)
+    # Align whole speaker blocks after the fact rather than each utterance as it lands:
+    # one contiguous span of one voice, timed in one pass, so word timings run continuously
+    # across the block and every word carries its speaker by construction. Needs the
+    # aligner loaded without the session running it per utterance.
+    by_block = turns is not None
+    backend_obj = _load(cfg, align=True) if by_block else _load(cfg)
+    if by_block and not isinstance(backend_obj, Aligning):
+        by_block = False  # falls back to per-utterance timings, which still work
+        console.print(f"  [dim]{backend_obj.name} times utterances, not blocks[/]")
+    cfg.timestamps = not by_block
 
     from rich.progress import (
         BarColumn,
@@ -1043,7 +1055,41 @@ def transcribe(
             f"{hooks.seconds / took:.0f}x realtime[/]"
         )
 
-    _report(cfg, *result, turns=turns)
+    segments, words, recorder = result
+    if by_block:
+        words = _align_blocks(backend_obj, audio, segments, turns, cfg.language)
+    _report(cfg, segments, words, recorder, turns=turns)
+
+
+def _align_blocks(backend, audio, segments, turns, language: str):
+    """Time each speaker block against its own span, and label its words as it goes."""
+    from .audio import SAMPLE_RATE
+    from .diarize import speaker_blocks
+
+    blocks = speaker_blocks(segments, turns, len(audio) / SAMPLE_RATE)
+    out = []
+    with console.status("[dim]timing words…[/]") as st:
+        for i, (speaker, start, end, text) in enumerate(blocks, 1):
+            st.update(f"[dim]timing words, block {i}/{len(blocks)}…[/]")
+            pcm = audio[int(start * SAMPLE_RATE) : int(end * SAMPLE_RATE)]
+            if not text.strip() or len(pcm) < SAMPLE_RATE // 10:
+                continue
+            try:
+                timed = backend.align(pcm, text, language=language)
+            except Exception as e:  # one bad block must not lose the transcript
+                console.print(f"[yellow]  block at {fmt_clock(start)} not timed: {e}[/]")
+                continue
+            out += [
+                {
+                    "text": w.text,
+                    "start": start + w.start,
+                    "end": start + w.end,
+                    "speaker": speaker,
+                }
+                for w in timed
+            ]
+    console.print(f"  [dim]{len(out)} words timed across {len(blocks)} speaker blocks[/]")
+    return out
 
 
 def _diarize_audio(audio, num_speakers: int | None):

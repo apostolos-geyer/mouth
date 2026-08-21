@@ -124,3 +124,36 @@ def speaker_changes(turns) -> tuple[float, ...]:
             out.append(float(turn.start))
         previous = turn.speaker
     return tuple(out)
+
+
+def speaker_blocks(segments, turns, duration: float):
+    """Group utterances into runs of one voice: [(speaker, start, end, text)].
+
+    A block is what a reader thinks of as one person's turn at talking, and -- because
+    utterances are already cut at speaker changes -- it is also a contiguous span of audio
+    containing exactly one voice. That is what makes it alignable as a single piece.
+
+    Attribution is by which turn each utterance overlaps most. With the cuts in place that
+    is not really a vote any more: an utterance cannot straddle a change.
+    """
+    if not segments:
+        return []
+    bounds = [start for start, _ in segments] + [duration]
+
+    owned = []
+    for i, (start, text) in enumerate(segments):
+        end = max(bounds[i + 1], start)
+        held: dict = {}
+        for t in turns:
+            over = t.overlap(start, end)
+            if over > 0:
+                held[t.speaker] = held.get(t.speaker, 0.0) + over
+        owned.append((max(held, key=lambda k: held[k]) if held else None, start, end, text))
+
+    blocks = []
+    for speaker, start, end, text in owned:
+        if blocks and blocks[-1][0] == speaker:
+            blocks[-1] = (speaker, blocks[-1][1], end, f"{blocks[-1][3]} {text}")
+        else:
+            blocks.append((speaker, start, end, text))
+    return blocks

@@ -159,6 +159,20 @@ class Biasable(Protocol):
 
 
 @runtime_checkable
+class Aligning(Protocol):
+    """A backend that can time known words against known audio, without transcribing.
+
+    Separate from transcribe(timestamps=True), which aligns whatever it just decoded over
+    one utterance. This aligns text you already have over a span you choose -- which is
+    what lets a whole speaker block be timed as one piece instead of utterance by
+    utterance, and lets every word in it carry that speaker by construction rather than by
+    overlapping timings against turns afterwards.
+    """
+
+    def align(self, pcm: np.ndarray, text: str, *, language: str) -> list[Word]: ...
+
+
+@runtime_checkable
 class Drafting(Protocol):
     """A backend that can decode a partial against the previous one as a draft."""
 
@@ -782,6 +796,18 @@ class MlxBackend:
             words=[Word(s["text"], s["start"], s["end"]) for s in segments],
             language=getattr(r, "language", "") or "",
         )
+
+    def align(self, pcm: np.ndarray, text: str, *, language: str) -> list[Word]:
+        if self._aligner is None:
+            raise BackendUnavailable(
+                "this backend was loaded with align=False; it cannot produce timestamps"
+            )
+        # start_time/end_time here, start/end on the transcribe path's time_stamps: the
+        # same two numbers under three names is what this adapter exists to absorb.
+        return [
+            Word(w.text, float(w.start_time), float(w.end_time))
+            for w in self._aligner.align(np.asarray(pcm, dtype=np.float32), text, language)
+        ]
 
     def open_stream(
         self, *, language: str, chunk_sec: float = 2.0, max_context_sec: float = 30.0
