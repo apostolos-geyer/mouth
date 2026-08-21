@@ -57,14 +57,33 @@ def label_words(words: list[dict], turns: list[Turn]) -> list[dict]:
     about the other, so the join is done here on time alone. A word overlapping nothing
     keeps speaker=None rather than being forced into the nearest turn -- silence between
     speakers is a real answer.
+
+    Both sides grow with recording length, so the obvious nested loop is quadratic in it:
+    a 28-minute interview is ~2M overlap tests, two hours ~40M -- as much time as the
+    diarization it post-processes. Turns are sorted and disjoint per speaker, so a
+    binary search bounds the candidates to the few that can actually overlap.
     """
+    if not turns or not words:
+        return [{**w, "speaker": None} for w in words]
+
+    ordered = sorted(turns, key=lambda t: t.start)
+    starts = np.fromiter((t.start for t in ordered), dtype=float, count=len(ordered))
+    ends = np.fromiter((t.end for t in ordered), dtype=float, count=len(ordered))
+    speakers = [t.speaker for t in ordered]
+    # A turn can only reach a word if it starts before the word ends; scanning back from
+    # there stops as soon as turns end before the word starts.
+    longest = float((ends - starts).max())
+
     out = []
     for w in words:
+        w_start, w_end = w["start"], w["end"]
+        hi = int(np.searchsorted(starts, w_end, side="right"))
+        lo = int(np.searchsorted(starts, w_start - longest, side="left"))
         best, best_ov = None, 0.0
-        for t in turns:
-            ov = t.overlap(w["start"], w["end"])
+        for i in range(lo, hi):
+            ov = min(ends[i], w_end) - max(starts[i], w_start)
             if ov > best_ov:
-                best, best_ov = t.speaker, ov
+                best, best_ov = speakers[i], ov
         out.append({**w, "speaker": best})
     return out
 

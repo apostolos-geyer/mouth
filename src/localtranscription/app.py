@@ -17,15 +17,22 @@ from .backends import (
     BACKENDS,
     DEFAULT_ALIGNER,
     DEFAULT_ASR,
-    DEFAULT_DTYPE,
     DTYPES,
     BackendUnavailable,
     available,
     describe_checkpoint,
     load_backend,
+    local_checkpoints,
 )
 from . import paths
 from . import quantize as qz
+from .diarize.offline import OfflineConfig
+
+# Tuned clustering policy lives in OfflineConfig; the CLI mirrors its defaults rather
+# than restating them. It had already drifted -- --threshold said 0.95 against the
+# config's 0.65, and because the flag always wins, the documented value was dead
+# everywhere except the tests.
+_DIA = OfflineConfig()
 from .engine import LANGUAGES, Config, run_session
 from .formats import fmt_clock, write_outputs
 from .vad import Cadence
@@ -69,9 +76,15 @@ REC = typer.Option(True, "--record/--no-record", help="Save per-utterance audio 
 RECDIR = typer.Option(paths.record_dir(), "--record-dir", help="Where recordings go.")
 
 
-def _config(out, language, device, mic, wav, threshold, first, growth, max_gap, record,
-            record_dir, backend="torch", model=DEFAULT_ASR, aligner=DEFAULT_ALIGNER,
-            dtype="auto", partials="reencode", stream_chunk=2.0) -> Config:
+def _config(*, out, language, device, mic, wav, threshold, first, growth, max_gap,
+            record, record_dir, backend, model, aligner, dtype, partials,
+            stream_chunk) -> Config:
+    """Validate CLI values and build a Config.
+
+    Keyword-only: seventeen positional arguments in the same order at two call sites is a
+    silent mis-assignment waiting to happen, and the string-typed ones (model, aligner,
+    dtype, partials) would swap without a TypeError.
+    """
     if language not in LANGUAGES:
         raise typer.BadParameter(f"{language!r} not supported. Try `lt languages`.")
     if backend not in BACKENDS:
@@ -111,7 +124,10 @@ def _report(cfg: Config, segments, words, recorder):
     if not segments:
         console.print("[yellow]Nothing transcribed.[/]")
         return
-    base = write_outputs(cfg.out_dir, segments, words)
+    # The session owns its name. Letting write_outputs invent one stamped it at a
+    # different moment from the recorder's directory, so the two artifacts for one
+    # session could not be matched up by name.
+    base = write_outputs(cfg.out_dir, segments, words, stem=cfg.stamped())
     console.print(
         f"\n[green]{len(segments)}[/] utterances, [green]{len(words)}[/] timed words"
         f" → [b]{base}[/b].{{txt,words.json,srt,timestamped.md}}"
@@ -142,7 +158,8 @@ def backends():
     for name in BACKENDS:
         ok = available(name)
         mark = "[green]✓ installed[/]" if ok else "[yellow]not installed[/]"
-        console.print(f"  [cyan]{name:<6}[/] {mark}  [dim]default dtype {DEFAULT_DTYPE[name]}[/]")
+        console.print(f"  [cyan]{name:<6}[/] {mark}  "
+                      f"[dim]default dtype {BACKENDS[name].default_dtype}[/]")
 
 
 @app.command()
@@ -152,8 +169,9 @@ def models(model_dir: Path = typer.Option(paths.models_dir(), "--dir",
     console.print("[dim]upstream[/]")
     console.print(f"  [cyan]{DEFAULT_ASR}[/]  [dim]unquantised[/]")
     console.print(f"  [cyan]{DEFAULT_ALIGNER}[/]  [dim]aligner[/]")
-    found = sorted(p for p in model_dir.glob("*") if (p / "config.json").exists()) \
-        if model_dir.exists() else []
+    found = local_checkpoints() if model_dir == paths.models_dir() else \
+        (sorted(p for p in model_dir.glob("*") if (p / "config.json").exists())
+         if model_dir.exists() else [])
     if not found:
         console.print(f"\n[dim]No local checkpoints in {model_dir}. "
                       f"Build one with `lt quantize`.[/]")
@@ -209,11 +227,11 @@ def diarize(
     audio_file: Path = typer.Argument(..., help="Audio to diarize (wav, flac, m4a, mp3, mp4)."),
     out: Optional[Path] = typer.Option(None, "--out", "-o", help="Write RTTM here [dim](default: stdout only)[/]."),
     num_speakers: Optional[int] = typer.Option(None, "--speakers", "-n", help="Exact speaker count, if known."),
-    min_speakers: int = typer.Option(1, "--min-speakers"),
-    max_speakers: int = typer.Option(8, "--max-speakers"),
-    threshold: float = typer.Option(0.95, "--threshold", help="Cosine distance at which two voices are one person."),
-    hop: float = typer.Option(1.0, "--hop", help="Seconds between analysis windows [dim](lower = finer, slower)[/]."),
-    compute_units: str = typer.Option("ALL", "--compute-units", help="ALL, CPU_AND_NE, CPU_AND_GPU or CPU_ONLY."),
+    min_speakers: int = typer.Option(_DIA.min_speakers, "--min-speakers"),
+    max_speakers: int = typer.Option(_DIA.max_speakers, "--max-speakers"),
+    threshold: float = typer.Option(_DIA.threshold, "--threshold", help="Cosine distance at which two voices are one person."),
+    hop: float = typer.Option(_DIA.hop_sec, "--hop", help="Seconds between analysis windows [dim](lower = finer, slower)[/]."),
+    compute_units: str = typer.Option(_DIA.compute_units, "--compute-units", help="ALL, CPU_AND_NE, CPU_AND_GPU or CPU_ONLY."),
     words: Optional[Path] = typer.Option(None, "--words", help="A words.json to label with speakers."),
 ):
     """Diarize a recording: who spoke when [dim](offline, whole file at once)[/].
@@ -223,10 +241,11 @@ def diarize(
     """
     import time
 
+    from .audio import SAMPLE_RATE
     from .audio import load as load_audio
     from .diarize import label_words
     from .diarize.coreml import COMPUTE_UNITS, DiarizationUnavailable
-    from .diarize.offline import OfflineConfig, OfflineDiarizer
+    from .diarize.offline import OfflineDiarizer
 
     if compute_units not in COMPUTE_UNITS:
         raise typer.BadParameter(f"{compute_units!r} unknown. Choose from {', '.join(COMPUTE_UNITS)}.")
@@ -237,10 +256,10 @@ def diarize(
         with console.status("[dim]loading diarization models…[/]") as st:
             engine = OfflineDiarizer(cfg, on_status=lambda m: st.update(f"[dim]{m}…[/]"))
         signal = load_audio(audio_file)
-        dur = len(signal) / 16000
+        dur = len(signal) / SAMPLE_RATE
         with console.status(f"[dim]diarizing {dur/60:.1f} min…[/]"):
             t0 = time.monotonic()
-            turns = engine.diarize(signal, 16000)
+            turns = engine.diarize(signal, SAMPLE_RATE)
             took = time.monotonic() - t0
     except (DiarizationUnavailable, FileNotFoundError, ValueError) as e:
         raise typer.BadParameter(str(e)) from e
@@ -327,9 +346,12 @@ def tui(
     """Full-screen live view [dim](q quit · p pause · c clear)[/]."""
     from .tui import build_tui
 
-    cfg = _config(out, language, device, mic, wav, threshold, first, growth, max_gap,
-                  record, record_dir, backend, model, aligner, dtype, partials,
-                  stream_chunk)
+    cfg = _config(
+        out=out, language=language, device=device, mic=mic, wav=wav, threshold=threshold,
+        first=first, growth=growth, max_gap=max_gap, record=record, record_dir=record_dir,
+        backend=backend, model=model, aligner=aligner, dtype=dtype, partials=partials,
+        stream_chunk=stream_chunk,
+    )
     # Load before entering full-screen: subprocess spawning breaks under Textual's stdout.
     ui = build_tui(cfg, _load(cfg))
     ui.run()
@@ -353,9 +375,12 @@ def cli(
     from rich.live import Live
     from rich.text import Text
 
-    cfg = _config(out, language, device, mic, wav, threshold, first, growth, max_gap,
-                  record, record_dir, backend, model, aligner, dtype, partials,
-                  stream_chunk)
+    cfg = _config(
+        out=out, language=language, device=device, mic=mic, wav=wav, threshold=threshold,
+        first=first, growth=growth, max_gap=max_gap, record=record, record_dir=record_dir,
+        backend=backend, model=model, aligner=aligner, dtype=dtype, partials=partials,
+        stream_chunk=stream_chunk,
+    )
 
     # Provisional text rewrites itself in place, which needs a terminal that can take the
     # line back. Piped to a file, finals-only keeps the output clean.

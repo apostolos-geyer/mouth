@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from localtranscription.backends import Backend, Transcription, Word
-from localtranscription.formats import words_to_srt, words_to_timestamped_md, write_outputs
+from localtranscription.formats import words_to_srt, write_outputs
 from localtranscription.recorder import SessionRecorder, load_manifest
 from localtranscription.vad import FRAME_LEN, SAMPLE_RATE, Cadence, segment_utterances
 
@@ -277,7 +277,6 @@ def test_close_gives_up_on_wedged_inference():
 
 def test_pending_interims_freed_when_final_has_no_text(tmp_path):
     """An utterance that transcribes to nothing must not strand its partials."""
-    import types
     from localtranscription.engine import Transcriber
     from localtranscription.vad import Chunk
 
@@ -297,7 +296,6 @@ def test_pending_interims_freed_when_final_has_no_text(tmp_path):
 
 
 def test_pending_interims_freed_when_final_raises(tmp_path):
-    import types
     from localtranscription.engine import Transcriber
     from localtranscription.vad import Chunk
 
@@ -423,13 +421,7 @@ def test_registered_backends_satisfy_the_protocol():
 
 def test_fake_backend_is_a_backend():
     """runtime_checkable Protocol: duck typing is the whole contract."""
-    class Fake:
-        name, detail = "fake", "fake"
-
-        def transcribe(self, audio, sample_rate, *, language, timestamps):
-            return Transcription(text="hi", words=[Word("hi", 0.0, 0.2)])
-
-    assert isinstance(Fake(), Backend)
+    assert isinstance(_FakeBackend(), Backend)
 
 
 def test_engine_offsets_words_from_backend_onto_session_clock():

@@ -25,7 +25,7 @@ lt paths                  # where transcripts, recordings and checkpoints live
 lt cadence 10             # what the partial schedule costs on a 10s utterance
 
 lt tui -l Greek -m 2      # language + mic index
-lt cli --wav clip.wav     # replay a 16kHz wav instead of the mic
+lt cli --wav clip.m4a     # replay a file instead of the mic (any format, resampled)
 lt cli --no-record        # don't save audio
 ```
 

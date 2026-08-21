@@ -33,6 +33,43 @@ TRUTH = FIXTURES / "interview-excerpt.json"
 # ---------------------------------------------------------------- powerset
 
 
+def test_diarizer_protocol_is_duck_typed():
+    """The Protocol is the module's declared seam, so something has to meet it.
+
+    isinstance, not issubclass: Diarizer carries data members (name, detail), and
+    runtime_checkable only supports issubclass for method-only protocols.
+    """
+    from localtranscription.diarize import Diarizer
+
+    class Fake:
+        name, detail = "fake", "fake"
+
+        def diarize(self, audio, sample_rate):
+            return [Turn(0.0, 1.0, 0)]
+
+    assert isinstance(Fake(), Diarizer)
+
+
+def test_offline_diarizer_exposes_the_protocol_surface():
+    """Checked without loading any weights, so it runs everywhere."""
+    from localtranscription.diarize.offline import OfflineDiarizer
+
+    assert OfflineDiarizer.name == "offline"
+    assert callable(OfflineDiarizer.diarize)
+
+
+def test_class_table_matches_the_powerset():
+    """The decode gather table must agree with the class list it replaced."""
+    import numpy as np
+
+    from localtranscription.diarize.offline import _CLASS_TABLE, powerset
+
+    classes = powerset()
+    assert _CLASS_TABLE.shape == (len(classes), 3)
+    for i, cls in enumerate(classes):
+        assert set(np.flatnonzero(_CLASS_TABLE[i])) == set(cls)
+
+
 def test_powerset_is_silence_then_singles_then_pairs():
     classes = powerset(3, 2)
     assert len(classes) == 7, "the segmentation model has exactly 7 output classes"
@@ -214,10 +251,11 @@ def _diarizer():
 
 @pytest.fixture(scope="module")
 def excerpt_turns():
-    import soundfile as sf
+    # audio.load, not soundfile directly: this is the decode path `lt diarize` uses, so
+    # the end-to-end test exercises it rather than a parallel one that could rot.
+    from localtranscription.audio import SAMPLE_RATE, load
 
-    audio, sr = sf.read(str(EXCERPT), dtype="float32")
-    return _diarizer().diarize(audio, sr), json.loads(TRUTH.read_text())
+    return _diarizer().diarize(load(EXCERPT), SAMPLE_RATE), json.loads(TRUTH.read_text())
 
 
 def test_excerpt_finds_exactly_two_speakers(excerpt_turns):

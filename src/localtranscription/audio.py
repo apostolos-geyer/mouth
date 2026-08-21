@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-SAMPLE_RATE = 16000
+from .vad import SAMPLE_RATE
 
 
 def load(path: Path | str, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
@@ -48,4 +48,6 @@ def load(path: Path | str, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
     container.close()
     if not chunks:
         return np.zeros(0, dtype=np.float32)
-    return np.concatenate(chunks).astype(np.float32)
+    # The resampler is configured format="flt", so the chunks are already float32 --
+    # concatenating with a dtype avoids a second full-length copy of the decoded file.
+    return np.concatenate(chunks, dtype=np.float32)

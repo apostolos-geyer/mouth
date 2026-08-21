@@ -11,13 +11,12 @@ from typing import Optional
 
 import numpy as np
 
-from .backends import (  # noqa: F401
-    ALIGNER_MODEL,
-    ASR_MODEL,
+from .backends import (
     DEFAULT_ALIGNER,
     DEFAULT_ASR,
     Backend,
     load_backend,
+    open_partial_stream,
 )
 from . import paths
 from .recorder import SessionRecorder
@@ -240,10 +239,13 @@ class Transcriber:
         ]
         self.words.extend(words)
         self.segments.append((chunk.start, text))
-        if self.recorder:
-            self.recorder.add(chunk.audio, chunk.start, text, words, self.language, took)
+        # Publish before writing: recorder.add() encodes FLAC synchronously on this
+        # thread, and the final is already correct -- making the screen wait on the disk
+        # also delays the next utterance's first partial behind it.
         if self.on_segment:
             self.on_segment(Segment(chunk.start, text, audio_sec, took))
+        if self.recorder:
+            self.recorder.add(chunk.audio, chunk.start, text, words, self.language, took)
 
 
 
@@ -275,12 +277,12 @@ def run_session(cfg: Config, hooks, backend=None, stop: Optional[threading.Event
     # Streaming partials need a backend that keeps decoder state; ask for one only if the
     # caller opted in, and fall back quietly rather than failing a session over a partial.
     stream = None
-    if cfg.partials == "stream" and getattr(backend, "streaming", False):
-        stream = backend.open_stream(
-            language=cfg.language, chunk_sec=cfg.stream_chunk_sec
+    if cfg.partials == "stream":
+        stream = open_partial_stream(
+            backend, language=cfg.language, chunk_sec=cfg.stream_chunk_sec
         )
-    elif cfg.partials == "stream":
-        hooks.status(f"{backend.name} has no streaming decoder; partials re-encode")
+        if stream is None:
+            hooks.status(f"{backend.name} has no streaming decoder; partials re-encode")
 
     source = make_source(cfg.mic, cfg.wav, realtime=True).open()
     worker = Transcriber(

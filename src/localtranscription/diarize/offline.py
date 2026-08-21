@@ -77,25 +77,33 @@ def cosine_condensed(unit: np.ndarray) -> np.ndarray:
     """
     from scipy.spatial.distance import squareform
 
-    gram = _gram(unit)
-    dist = 1.0 - gram
+    # The gram is dead after this, so subtract into it rather than allocating a second
+    # n x n array -- at 8000 embeddings that is 256 MB not spent.
+    dist = _gram(unit)
+    np.subtract(1.0, dist, out=dist)
     # Round-off can push a self-similar pair a hair below zero, which linkage reads as a
     # negative distance and refuses.
     np.clip(dist, 0.0, 2.0, out=dist)
     np.fill_diagonal(dist, 0.0)
-    return squareform(dist, checks=False).astype(np.float64)
+    # linkage wants float64; copy=False makes that free when it already is.
+    return squareform(dist, checks=False).astype(np.float64, copy=False)
 
 
 def _gram(unit: np.ndarray) -> np.ndarray:
-    """X @ X.T on the GPU when MLX is installed, on AMX via Accelerate otherwise."""
+    """X @ X.T on the GPU when MLX is installed, on AMX via Accelerate otherwise.
+
+    Kept in float32: the embeddings are float32, so float64 here would double an n x n
+    array and every elementwise pass over it downstream for no added precision.
+    """
+    contiguous = np.ascontiguousarray(unit, dtype=np.float32)
     try:
         import mlx.core as mx
     except ImportError:
-        return unit @ unit.T
-    a = mx.array(np.ascontiguousarray(unit, dtype=np.float32))
-    out = a @ a.T
+        return contiguous @ contiguous.T
+    out = mx.array(contiguous)
+    out = out @ out.T
     mx.eval(out)
-    return np.asarray(out, dtype=np.float64)
+    return np.asarray(out, dtype=np.float32)
 
 
 WINDOW_SEC = 10.0          # what the segmentation model was exported for
@@ -116,6 +124,18 @@ MAX_OVERLAP_SEC = 0.10
 MIN_CORE_EMBEDDINGS = 10
 
 
+def class_table(classes: list[tuple], num_speakers: int = LOCAL_SPEAKERS) -> np.ndarray:
+    """(n_classes, num_speakers) bool: which speakers each powerset class means.
+
+    Decoding a window is then one gather rather than a loop over classes and speakers.
+    """
+    table = np.zeros((len(classes), num_speakers), dtype=bool)
+    for cls, speakers in enumerate(classes):
+        for spk in speakers:
+            table[cls, spk] = True
+    return table
+
+
 def powerset(num_speakers: int = LOCAL_SPEAKERS, max_simultaneous: int = 2) -> list[tuple]:
     """Class index -> which speakers are talking. Silence, singles, then pairs.
 
@@ -126,6 +146,9 @@ def powerset(num_speakers: int = LOCAL_SPEAKERS, max_simultaneous: int = 2) -> l
     for size in range(max_simultaneous + 1):
         out.extend(itertools.combinations(range(num_speakers), size))
     return out
+
+
+_CLASS_TABLE = class_table(powerset())
 
 
 @dataclass
@@ -161,13 +184,10 @@ def _reliable(voiced: np.ndarray, shared: np.ndarray) -> np.ndarray:
     is always available.
     """
     solo = shared <= MAX_OVERLAP_SEC
-    for mask in (solo & (voiced >= MIN_CLUSTER_SEC),
-                 voiced >= MIN_CLUSTER_SEC,
-                 solo,
-                 np.ones(len(voiced), dtype=bool)):
+    for mask in (solo & (voiced >= MIN_CLUSTER_SEC), voiced >= MIN_CLUSTER_SEC, solo):
         if mask.sum() >= MIN_CORE_EMBEDDINGS:
             return mask
-    return np.ones(len(voiced), dtype=bool)
+    return np.ones(len(voiced), dtype=bool)  # everything, which is always enough
 
 
 def cluster_embeddings(embeddings: np.ndarray, reliable: np.ndarray,
@@ -183,10 +203,8 @@ def cluster_embeddings(embeddings: np.ndarray, reliable: np.ndarray,
     # Cosine only compares direction, so a loud stretch and a quiet stretch of the same
     # voice stay close.
     norm = embeddings / (np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-8)
-    if len(norm) == 1:
-        return np.zeros(1, dtype=int)
-
     core = norm[reliable] if reliable.any() else norm
+    # Covers a single embedding too: with one row, core is that row either way.
     if len(core) == 1:
         return np.zeros(len(norm), dtype=int)
 
@@ -238,6 +256,7 @@ class OfflineDiarizer:
                             self.cfg.compute_units)
         self.detail = f"coreml · {self.cfg.compute_units.lower()}"
         self._classes = powerset()
+        self._wave_buf: Optional[np.ndarray] = None
 
     # ---------------------------------------------------------------- stages
 
@@ -246,13 +265,9 @@ class OfflineDiarizer:
 
         argmax over the powerset, not a per-speaker threshold: the classes are mutually
         exclusive by construction, so one decision covers overlap as well as identity.
+        The class -> speakers mapping is a fixed 7x3 table, so decoding is one gather.
         """
-        chosen = scores.argmax(axis=1)
-        active = np.zeros((scores.shape[0], LOCAL_SPEAKERS), dtype=bool)
-        for cls in np.unique(chosen):
-            for spk in self._classes[int(cls)]:
-                active[chosen == cls, spk] = True
-        return active
+        return _CLASS_TABLE[scores.argmax(axis=1)]
 
     def _segment_all(self, audio: np.ndarray, starts: list[int], win: int) -> list[np.ndarray]:
         """Segment every window, `segmentation_batch` at a time.
@@ -267,9 +282,13 @@ class OfflineDiarizer:
         out: list[np.ndarray] = []
         for i in range(0, len(starts), batch):
             group = starts[i:i + batch]
-            buf[:] = 0.0  # the export's batch dimension is fixed; a short tail stays padded
             for j, s0 in enumerate(group):
                 buf[j, 0] = audio[s0:s0 + win]
+            # Only the tail batch is ever short, and only its unused rows need clearing --
+            # every other row was just overwritten. Zeroing all 32 costs a 10 MB memset per
+            # batch, ~533 MB of it dead over a 28-minute recording.
+            if len(group) < batch:
+                buf[len(group):] = 0.0
             result = self._seg.predict({"audio": buf})
             scores = np.asarray(next(iter(result.values())), dtype=np.float32)
             scores = scores.reshape(batch, -1, n_classes)
@@ -277,13 +296,18 @@ class OfflineDiarizer:
         return out
 
     def _embed(self, window: np.ndarray, active: np.ndarray) -> np.ndarray:
-        """Masked embeddings for the window's local speakers -> (LOCAL_SPEAKERS, 256)."""
-        n_frames = active.shape[0]
-        waveform = np.repeat(window.reshape(1, -1), EMBED_BATCH, axis=0).astype(np.float16)
-        mask = active.T.astype(np.float16)[:EMBED_BATCH]
-        if mask.shape[0] < EMBED_BATCH:  # defensive: model batch is fixed
-            mask = np.pad(mask, ((0, EMBED_BATCH - mask.shape[0]), (0, 0)))
-        out = self._emb.predict({"waveform": waveform, "mask": mask.reshape(EMBED_BATCH, n_frames)})
+        """Masked embeddings for the window's local speakers -> (LOCAL_SPEAKERS, 256).
+
+        The model takes one copy of the waveform per local speaker, each with its own mask.
+        Both buffers are reused across windows: building them fresh allocated ~2.9 MB of
+        temporaries per window, which over a 28-minute recording is GBs of pure churn.
+        """
+        if self._wave_buf is None or self._wave_buf.shape[1] != window.shape[0]:
+            self._wave_buf = np.empty((EMBED_BATCH, window.shape[0]), dtype=np.float16)
+        self._wave_buf[0] = window
+        self._wave_buf[1:] = self._wave_buf[0]
+        mask = np.ascontiguousarray(active.T[:EMBED_BATCH], dtype=np.float16)
+        out = self._emb.predict({"waveform": self._wave_buf, "mask": mask})
         emb = out.get("embedding")
         if emb is None:  # the converted models don't all agree on the output name
             emb = next(v for v in out.values() if np.ndim(v) == 2 and np.shape(v)[0] == EMBED_BATCH)
@@ -306,8 +330,13 @@ class OfflineDiarizer:
         if total == 0:
             return []
         # The model's input length is fixed, so a short recording is padded rather than
-        # refused -- a 3s clip is a normal thing to diarize.
-        padded = np.pad(audio, (0, max(0, win - total)))
+        # refused -- a 3s clip is a normal thing to diarize. Anything already long enough
+        # is used as-is: np.pad copies the whole recording even for a zero-width pad.
+        padded = audio if total >= win else np.pad(audio, (0, win - total))
+        # Both models take fp16. Converting once here rather than per window matters
+        # because windows overlap: at a 1s hop each sample would otherwise be converted
+        # ~10 times for segmentation and ~30 more for embedding.
+        signal = padded.astype(np.float16)
 
         starts = list(range(0, max(1, len(padded) - win + 1), hop))
         if starts[-1] + win < len(padded):
@@ -315,25 +344,26 @@ class OfflineDiarizer:
 
         # Pass 1: segment every window, and embed the speakers it found. `reliable` records
         # which of those embeddings are clean enough to define a cluster.
-        activities = self._segment_all(padded, starts, win)
+        activities = self._segment_all(signal, starts, win)
+        n_frames_win = activities[0].shape[0]
+        frame_sec = WINDOW_SEC / n_frames_win
 
-        per_window, vectors, owners, voiced_of, shared_of = [], [], [], [], []
+        vectors, owners, voiced_of, shared_of = [], [], [], []
         for w_i, s0 in enumerate(starts):
             active = activities[w_i]
-            per_window.append((s0, active))
-            frame_sec = WINDOW_SEC / active.shape[0]
             voiced = active.sum(axis=0) * frame_sec
             enough = voiced >= MIN_ACTIVITY_SEC
             if not enough.any():
                 continue
-            emb = self._embed(padded[s0:s0 + win], active)
+            # Frames with two or more speakers -- the same thing as "k overlaps someone
+            # else", computed once per window instead of once per speaker.
+            multi = active.sum(axis=1) > 1
+            emb = self._embed(signal[s0:s0 + win], active)
             for k in np.flatnonzero(enough):
-                others = [j for j in range(LOCAL_SPEAKERS) if j != k]
-                shared = (active[:, k] & active[:, others].any(axis=1)).sum() * frame_sec
                 vectors.append(emb[k])
                 owners.append((w_i, int(k)))
                 voiced_of.append(float(voiced[k]))
-                shared_of.append(float(shared))
+                shared_of.append(float((active[:, k] & multi).sum() * frame_sec))
 
         if not vectors:
             return []
@@ -349,12 +379,10 @@ class OfflineDiarizer:
 
         # Pass 3: vote. Every frame sits under ~WINDOW_SEC/hop windows; a speaker holds the
         # frame if more than half of the windows that saw it agree.
-        n_frames_win = per_window[0][1].shape[0]
-        frame_sec = WINDOW_SEC / n_frames_win
         n_global = int(np.ceil(len(padded) / sample_rate / frame_sec)) + 1
         votes = np.zeros((n_global, n_speakers), dtype=np.float32)
         seen = np.zeros(n_global, dtype=np.float32)
-        for w_i, (s0, active) in enumerate(per_window):
+        for w_i, (s0, active) in enumerate(zip(starts, activities)):
             off = int(round(s0 / sample_rate / frame_sec))
             end = min(off + n_frames_win, n_global)
             span = end - off

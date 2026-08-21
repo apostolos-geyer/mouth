@@ -39,10 +39,6 @@ def cache_dir() -> Path:
     return _base("XDG_CACHE_HOME", ".cache")
 
 
-def config_dir() -> Path:
-    return _base("XDG_CONFIG_HOME", ".config")
-
-
 def out_dir() -> Path:
     """Where transcripts go."""
     return data_dir() / "out"

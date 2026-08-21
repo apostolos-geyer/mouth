@@ -6,8 +6,8 @@ while the embedding model is 2.7x faster letting CoreML pick (11.6ms) than pinne
 Neural Engine (31.5ms). So each model carries its own default and `--compute-units`
 overrides all of them.
 
-Weights come from FluidInference's conversions of the pyannote community-1 family and
-NVIDIA's streaming Sortformer -- both ungated, unlike the pyannote originals.
+Weights come from FluidInference's conversion of the pyannote community-1 family, which
+is ungated unlike the pyannote originals.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Optional
 
 DIARIZATION_REPO = "FluidInference/speaker-diarization-coreml"
-SORTFORMER_REPO = "FluidInference/diar-streaming-sortformer-coreml"
 
 # "ALL" lets CoreML choose across ANE/GPU/CPU; the others pin it.
 COMPUTE_UNITS = ("ALL", "CPU_AND_NE", "CPU_AND_GPU", "CPU_ONLY")
@@ -25,13 +24,6 @@ COMPUTE_UNITS = ("ALL", "CPU_AND_NE", "CPU_AND_GPU", "CPU_ONLY")
 
 class DiarizationUnavailable(RuntimeError):
     """Raised with an actionable message when the diarization deps aren't installed."""
-
-
-def available() -> bool:
-    """Whether coremltools is importable, without touching the network."""
-    import importlib.util
-
-    return importlib.util.find_spec("coremltools") is not None
 
 
 def _require():

@@ -25,15 +25,6 @@ import numpy as np
 DEFAULT_ASR = "Qwen/Qwen3-ASR-1.7B"
 DEFAULT_ALIGNER = "Qwen/Qwen3-ForcedAligner-0.6B"
 
-# Historical names, still imported elsewhere.
-ASR_MODEL = DEFAULT_ASR
-ALIGNER_MODEL = DEFAULT_ALIGNER
-
-# What each backend runs at when --dtype isn't given. These differ because the fast path
-# differs: torch/MPS is strongest in bf16, MLX's kernels and every published MLX
-# quantisation are fp16.
-DEFAULT_DTYPE = {"torch": "bf16", "mlx": "fp16"}
-
 DTYPES = ("bf16", "fp16", "fp32")
 
 
@@ -83,6 +74,13 @@ class PartialStream(Protocol):
     so nothing here can affect the transcript that lands on disk.
     """
 
+    stable: str
+    """The prefix the decoder has committed to and won't revise.
+
+    Monotonic: the largest surviving prefix across turns. A front end renders this
+    settled and the tail after it as still-moving.
+    """
+
     def feed(self, pcm: np.ndarray) -> str:
         """Add audio, return the best text so far (cumulative, not a delta)."""
 
@@ -92,6 +90,32 @@ class PartialStream(Protocol):
 
 class BackendUnavailable(RuntimeError):
     """Raised with an actionable message when a backend's deps aren't installed."""
+
+
+def _dtype(table: dict, name: str, backend: str):
+    """Map a friendly dtype name onto a library's own type, or say what is accepted."""
+    resolved = table.get(name)
+    if resolved is None:
+        raise BackendUnavailable(
+            f"unknown dtype {name!r} for the {backend} backend; "
+            f"choose from {', '.join(DTYPES)}"
+        )
+    return resolved
+
+
+def local_checkpoints() -> list[Path]:
+    """Every quantised checkpoint on disk, newest naming first.
+
+    One definition of what counts -- a directory with a config.json -- shared by
+    `lt models` and by resolve_checkpoint's "Available:" message, so the two can't
+    disagree about what exists.
+    """
+    from . import paths
+
+    models = paths.models_dir()
+    if not models.exists():
+        return []
+    return sorted(p for p in models.glob("*") if (p / "config.json").exists())
 
 
 def resolve_checkpoint(ref: str) -> str:
@@ -130,8 +154,7 @@ def resolve_checkpoint(ref: str) -> str:
     if len(parts) == 2 and not local_intent:
         return ref
 
-    known = sorted(p.name for p in models.glob("*") if (p / "config.json").exists()) \
-        if models.exists() else []
+    known = [p.name for p in local_checkpoints()]
     listing = ("\n  " + "\n  ".join(known)) if known else " (none yet -- run `lt quantize`)"
     raise BackendUnavailable(
         f"no checkpoint {ref!r}: not a path, and not in {models}."
@@ -164,6 +187,11 @@ class TorchBackend:
     """PyTorch + transformers on MPS. The reference implementation."""
 
     name = "torch"
+    # What this backend is fastest in when --dtype is "auto": torch/MPS is strongest in
+    # bf16, while MLX's kernels and every published MLX quantisation are fp16.
+    default_dtype = "bf16"
+    requires = ("torch", "qwen_asr")
+    takes_device = True
     # qwen_asr's own streaming path is vLLM-only, and vLLM has no Metal support, so there
     # is nothing to hook here. Partials re-transcribe the prefix on this backend.
     streaming = False
@@ -181,13 +209,8 @@ class TorchBackend:
         # the cursor. Hub *download* bars are separate and still show on first run.
         hf_logging.disable_progress_bar()
 
-        resolved = {"bf16": torch.bfloat16, "fp16": torch.float16,
-                    "fp32": torch.float32}.get(dtype)
-        if resolved is None:
-            raise BackendUnavailable(
-                f"unknown dtype {dtype!r} for the torch backend; choose from "
-                f"{', '.join(DTYPES)}"
-            )
+        resolved = _dtype({"bf16": torch.bfloat16, "fp16": torch.float16,
+                           "fp32": torch.float32}, dtype, "torch")
 
         say = on_status or (lambda m: None)
         say(f"loading {model} on {device}")
@@ -296,13 +319,8 @@ class _MlxStream:
 
     @property
     def stable(self) -> str:
-        """The prefix the decoder has committed to and won't revise.
-
-        mlx-qwen3-asr keeps this monotonic by design: it is the largest surviving prefix
-        across turns. The tail after it is still open to being rewritten, which is what a
-        front end should render as provisional.
-        """
-        return ((getattr(self._state, "stable_text", "") or "") if self._state else "").strip()
+        """mlx-qwen3-asr keeps `stable_text` monotonic by design; see PartialStream."""
+        return (getattr(self._state, "stable_text", "") or "").strip()
 
     def feed(self, pcm: np.ndarray) -> str:
         if self._state is None:
@@ -354,6 +372,9 @@ class MlxBackend:
     """
 
     name = "mlx"
+    default_dtype = "fp16"
+    requires = ("mlx_qwen3_asr",)
+    takes_device = False  # unified memory; there is no device to place anything on
     streaming = True
 
     def __init__(self, model: str = DEFAULT_ASR, aligner: str = DEFAULT_ALIGNER,
@@ -367,13 +388,8 @@ class MlxBackend:
                 "`uv sync --extra mlx`, or use --backend torch"
             ) from e
 
-        resolved = {"fp16": mx.float16, "bf16": mx.bfloat16,
-                    "fp32": mx.float32}.get(dtype)
-        if resolved is None:
-            raise BackendUnavailable(
-                f"unknown dtype {dtype!r} for the mlx backend; choose from "
-                f"{', '.join(DTYPES)}"
-            )
+        resolved = _dtype({"fp16": mx.float16, "bf16": mx.bfloat16,
+                           "fp32": mx.float32}, dtype, "mlx")
 
         say = on_status or (lambda m: None)
         say(f"loading {model} via mlx")
@@ -424,17 +440,35 @@ def available(name: str) -> bool:
     """Whether a backend's imports resolve, without loading any weights."""
     import importlib.util
 
-    needed = {"torch": ("torch", "qwen_asr"), "mlx": ("mlx_qwen3_asr",)}.get(name, ())
-    return all(importlib.util.find_spec(m) is not None for m in needed)
+    cls = BACKENDS.get(name)
+    if cls is None:  # an unknown backend is not "available"
+        return False
+    return all(importlib.util.find_spec(m) is not None for m in cls.requires)
 
 
 def resolve_dtype(backend: str, dtype: Optional[str]) -> str:
     """`--dtype auto` means whichever precision that backend is actually fast in."""
     if dtype in (None, "", "auto"):
-        return DEFAULT_DTYPE.get(backend, "fp16")
+        cls = BACKENDS.get(backend)
+        return cls.default_dtype if cls else "fp16"
     if dtype not in DTYPES:
         raise BackendUnavailable(f"unknown dtype {dtype!r}; choose from {', '.join(DTYPES)}")
     return dtype
+
+
+def open_partial_stream(backend: Backend, *, language: str,
+                        chunk_sec: float) -> Optional[PartialStream]:
+    """A stream for provisional passes, or None if this backend has no incremental decode.
+
+    The capability is probed rather than required of the Backend protocol: making it a
+    required attribute breaks every existing implementer, including the fakes in the test
+    suite, for something most backends won't have. Probing it *here* rather than in the
+    engine is what keeps the attribute name and the constructor's keywords -- which are
+    backend facts -- inside this module.
+    """
+    if not getattr(backend, "streaming", False):
+        return None
+    return backend.open_stream(language=language, chunk_sec=chunk_sec)
 
 
 def load_backend(name: str, *, model: Optional[str] = None,
@@ -450,9 +484,8 @@ def load_backend(name: str, *, model: Optional[str] = None,
     aligner = resolve_checkpoint(aligner or DEFAULT_ALIGNER)
     dtype = resolve_dtype(name, dtype)
 
-    # device is torch-only; MLX has unified memory and no device argument.
     kwargs = {"model": model, "aligner": aligner, "dtype": dtype, "on_status": on_status}
-    if name == "torch":
+    if cls.takes_device:
         kwargs["device"] = device
     backend = cls(**kwargs)
 

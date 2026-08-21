@@ -213,7 +213,6 @@ def build_tui(cfg, backend):
             self.started = time.monotonic()
             self.n_words = 0
             self.n_utts = 0
-            self.backlog = 0
             self.status_text = "starting"
             self.result = ([], [], None)
 
@@ -246,7 +245,7 @@ def build_tui(cfg, backend):
             def cell(label, value, colour=TEXT):
                 return f"[{DIM}]{label}[/] [{colour}]{value}[/]"
 
-            q = self.backlog
+            q = self.worker.backlog if self.worker else 0
             self.stats.update(
                 "  ".join([
                     cell("elapsed", fmt_clock(time.monotonic() - self.started)),

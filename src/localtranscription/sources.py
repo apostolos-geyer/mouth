@@ -11,7 +11,20 @@ from typing import Iterator, Optional
 
 import numpy as np
 
+from .audio import load as load_audio
 from .vad import FRAME_LEN, FRAME_MS, SAMPLE_RATE
+
+
+def ambient_threshold(levels) -> float:
+    """Turn measured frame RMS into a VAD threshold.
+
+    Shared so the mic and a replayed file agree: these constants are tuned, and having
+    them written twice meant tuning the live path silently left replay -- what tests and
+    demos actually run -- behaving differently.
+    """
+    if len(levels) == 0:
+        return 0.01
+    return max(3.0 * float(np.median(levels)), 0.005)
 
 
 @dataclass
@@ -55,9 +68,7 @@ class MicSource:
                 levels.append(float(np.sqrt(np.mean(self._q.get(timeout=0.5) ** 2))))
             except queue.Empty:
                 break
-        if not levels:
-            return 0.01
-        return max(3.0 * float(np.median(levels)), 0.005)
+        return ambient_threshold(levels)
 
     def frames(self, stop: threading.Event) -> Iterator[np.ndarray]:
         while not stop.is_set():
@@ -75,14 +86,10 @@ class WavSource:
     realtime: bool = False
 
     def open(self):
-        import soundfile as sf
-
-        audio, sr = sf.read(str(self.path), dtype="float32")
-        if audio.ndim > 1:
-            audio = audio.mean(axis=1)
-        if sr != SAMPLE_RATE:
-            raise ValueError(f"{self.path} is {sr}Hz; expected {SAMPLE_RATE}Hz")
-        self._audio = audio
+        # audio.load is the same decoder `lt diarize` uses: it downmixes and resamples
+        # anything PyAV can read. Rolling a second, stricter loader here meant --wav
+        # refused files the tool could already open one module away.
+        self._audio = load_audio(self.path)
         return self
 
     def close(self):
@@ -93,8 +100,7 @@ class WavSource:
         if head.size == 0:
             return 0.01
         frames = head[: head.size - head.size % FRAME_LEN].reshape(-1, FRAME_LEN)
-        levels = np.sqrt((frames**2).mean(axis=1))
-        return max(3.0 * float(np.median(levels)), 0.005)
+        return ambient_threshold(np.sqrt((frames**2).mean(axis=1)))
 
     def frames(self, stop: threading.Event) -> Iterator[np.ndarray]:
         for i in range(0, len(self._audio) - FRAME_LEN, FRAME_LEN):
