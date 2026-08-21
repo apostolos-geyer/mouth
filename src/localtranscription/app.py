@@ -40,7 +40,7 @@ from .diarize.offline import OfflineConfig
 _DIA = OfflineConfig()
 from .engine import LANGUAGES, Config, run_session
 from .formats import fmt_clock, write_outputs
-from .vad import Cadence
+from .vad import MAX_UTTERANCE_SEC, MIN_SPEECH_SEC, Cadence
 
 console = Console()
 app = typer.Typer(
@@ -123,6 +123,10 @@ DTYPE = typer.Option("auto", "--dtype",
 MIC = typer.Option(None, "--mic", "-m", help="Input device index.")
 WAV = typer.Option(None, "--wav", help="Replay a 16kHz wav instead of the mic.")
 THRESH = typer.Option(None, "--threshold", "-t", help="RMS VAD threshold [dim](auto)[/].")
+MINSPEECH = typer.Option(MIN_SPEECH_SEC, "--min-speech",
+                         help="Voiced audio an utterance needs to count at all. "
+                              "[dim]Lower for single words; a spoken \"Claude\" only "
+                              "just clears the default.[/]")
 FIRST = typer.Option(0.4, "--interim", help="When the first partial fires, and the floor between partials.")
 GROWTH = typer.Option(1.6, "--growth", help="Partial spacing growth [dim](1.0 = fixed spacing)[/].")
 MAXGAP = typer.Option(3.0, "--max-gap", help="Longest a partial may lag on a long utterance.")
@@ -139,7 +143,7 @@ RECDIR = typer.Option(paths.record_dir(), "--record-dir", help="Where recordings
 
 def _config(*, out, language, device, mic, wav, threshold, first, growth, max_gap,
             record, record_dir, backend, model, aligner, dtype, partials,
-            stream_chunk) -> Config:
+            stream_chunk, min_speech=MIN_SPEECH_SEC) -> Config:
     """Validate CLI values and build a Config.
 
     Keyword-only: seventeen positional arguments in the same order at two call sites is a
@@ -156,6 +160,12 @@ def _config(*, out, language, device, mic, wav, threshold, first, growth, max_ga
         raise typer.BadParameter(f"{partials!r} unknown. Choose reencode or stream.")
     if stream_chunk <= 0:
         raise typer.BadParameter("--stream-chunk must be positive.")
+    # 0 is meaningful -- every opened utterance counts -- but negative is a typo, and
+    # an utterance can't outlast the 30s cap.
+    if not 0 <= min_speech < MAX_UTTERANCE_SEC:
+        raise typer.BadParameter(
+            f"--min-speech must be between 0 and {MAX_UTTERANCE_SEC:g} seconds."
+        )
     # Checkpoint refs are resolved in backends.resolve_checkpoint, which knows about the
     # checkpoint directory. An earlier guard here only fired when the ref's *parent*
     # existed, so a stale `models/foo` sailed past it and died as a Hub 401.
@@ -164,7 +174,7 @@ def _config(*, out, language, device, mic, wav, threshold, first, growth, max_ga
         out_dir=out, language=language, device=device, backend=backend, model=model,
         aligner=aligner, dtype=dtype, mic=mic, wav=wav, threshold=threshold,
         cadence=cadence, record=record, record_dir=record_dir,
-        partials=partials, stream_chunk_sec=stream_chunk,
+        partials=partials, stream_chunk_sec=stream_chunk, min_speech=min_speech,
     )
 
 
@@ -486,7 +496,7 @@ def tui(
     growth: float = GROWTH, max_gap: float = MAXGAP, record: bool = REC,
     record_dir: Path = RECDIR, backend: str = BACKEND, model: str = MODEL,
     aligner: str = ALIGNER, dtype: str = DTYPE, partials: str = PARTIALS,
-    stream_chunk: float = CHUNKSEC,
+    stream_chunk: float = CHUNKSEC, min_speech: float = MINSPEECH,
 ):
     """Full-screen live view [dim](q quit · p pause · c clear)[/]."""
     from .tui import build_tui
@@ -495,7 +505,7 @@ def tui(
         out=out, language=language, device=device, mic=mic, wav=wav, threshold=threshold,
         first=first, growth=growth, max_gap=max_gap, record=record, record_dir=record_dir,
         backend=backend, model=model, aligner=aligner, dtype=dtype, partials=partials,
-        stream_chunk=stream_chunk,
+        stream_chunk=stream_chunk, min_speech=min_speech,
     )
     # Load before entering full-screen: subprocess spawning breaks under Textual's stdout.
     ui = build_tui(cfg, _load(cfg))
@@ -514,7 +524,7 @@ def cli(
     growth: float = GROWTH, max_gap: float = MAXGAP, record: bool = REC,
     record_dir: Path = RECDIR, backend: str = BACKEND, model: str = MODEL,
     aligner: str = ALIGNER, dtype: str = DTYPE, partials: str = PARTIALS,
-    stream_chunk: float = CHUNKSEC,
+    stream_chunk: float = CHUNKSEC, min_speech: float = MINSPEECH,
 ):
     """Stream transcriptions to stdout [dim](Ctrl-C to stop)[/]."""
     from rich.live import Live
@@ -524,7 +534,7 @@ def cli(
         out=out, language=language, device=device, mic=mic, wav=wav, threshold=threshold,
         first=first, growth=growth, max_gap=max_gap, record=record, record_dir=record_dir,
         backend=backend, model=model, aligner=aligner, dtype=dtype, partials=partials,
-        stream_chunk=stream_chunk,
+        stream_chunk=stream_chunk, min_speech=min_speech,
     )
 
     # Provisional text rewrites itself in place, which needs a terminal that can take the
@@ -618,6 +628,7 @@ def dictate(
     events: bool = EVENTS, interim: float = DICT_FIRST, hold: bool = HOLD,
     record: bool = DICT_REC, record_dir: Path = RECDIR, backend: str = BACKEND,
     model: str = MODEL, dtype: str = DTYPE, device: str = DEVICE,
+    min_speech: float = MINSPEECH,
 ):
     """Speech to stdout, then exit. [dim]A surface to compose on.[/]
 
@@ -653,6 +664,7 @@ def dictate(
         threshold=threshold, first=interim, growth=1.6, max_gap=3.0,
         record=record, record_dir=record_dir, backend=backend, model=model,
         aligner=DEFAULT_ALIGNER, dtype=dtype, partials="reencode", stream_chunk=2.0,
+        min_speech=min_speech,
     )
     # Dictation wants a string, not a transcript. This is what skips loading the 0.6B
     # aligner as well as running it -- see load_backend(align=...).

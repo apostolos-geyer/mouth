@@ -17,6 +17,11 @@ PREROLL_FRAMES = 10  # 300ms kept before onset so word starts aren't clipped
 TAIL_FRAMES = 7  # 210ms of the closing silence kept; the rest is trimmed
 # Gate on *voiced* frames, not clip length: every clip carries pre-roll plus trailing
 # silence, so a length check would pass a 120ms cough as a ~1.1s utterance.
+#
+# It is a duration heuristic standing in for a detector that can't tell speech from a
+# keyboard clack, and it cuts real words: "Claude" said at speed measures 10 voiced
+# frames -- exactly the gate, no margin -- because only the vowel clears an RMS
+# threshold, while the /kl/ burst and final /d/ read as silence. Hence --min-speech.
 MIN_SPEECH_SEC = 0.3
 MAX_UTTERANCE_SEC = 30.0  # forced aligner tops out at 180s; flush well before
 
@@ -78,7 +83,8 @@ class Cadence:
 
 
 def segment_utterances(frame_iter, threshold: float, on_level=None,
-                       cadence: Cadence | None = None, incremental: bool = False):
+                       cadence: Cadence | None = None, incremental: bool = False,
+                       min_speech: float = MIN_SPEECH_SEC):
     """Cut a stream of fixed-size frames into utterances.
 
     Yields Chunks. on_level(rms, in_speech) is called per frame so a UI can draw a meter
@@ -92,6 +98,9 @@ def segment_utterances(frame_iter, threshold: float, on_level=None,
     With incremental=True the provisional chunks instead carry only the audio since the
     last one. That is only correct for a backend holding its own decoder state across the
     utterance -- otherwise each chunk is a fragment with no context.
+
+    min_speech is the voiced audio an utterance needs to count at all. Lower it for
+    single words, at the cost of letting shorter noise through to the model.
     """
     preroll = deque(maxlen=PREROLL_FRAMES)
     utterance: list[np.ndarray] = []
@@ -104,7 +113,7 @@ def segment_utterances(frame_iter, threshold: float, on_level=None,
     consumed = 0
     next_interim = None
 
-    min_voiced = MIN_SPEECH_SEC * SAMPLE_RATE / FRAME_LEN
+    min_voiced = min_speech * SAMPLE_RATE / FRAME_LEN
 
     def build(utterance, silence_run, voiced):
         if voiced < min_voiced:

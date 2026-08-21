@@ -157,9 +157,36 @@ mic (16k mono) -> 30ms frames -> RMS VAD -> chunk -> queue -> transcribe() -> te
 - 300ms pre-roll before each onset so word starts aren't clipped; closing silence trimmed
   to 210ms.
 - An utterance needs 300ms of *voiced* audio to count, so coughs and key clicks never
-  reach the model to be hallucinated over.
+  reach the model to be hallucinated over. `--min-speech` moves that gate, and single
+  words want it lower — see below.
 - Inference runs on a worker thread; capture never blocks.
 - Utterances cap at 30s (the forced aligner's own limit is 180s).
+
+### `--min-speech`: the gate cuts real words
+
+The 300ms is voiced *frames*, not clip length — frames whose RMS clears the threshold. So
+it counts the vowel and little else: measured across 237 recorded utterances, a spoken
+"Claude" is **exactly 10 voiced frames against a gate of 10**, because the `/kl/` burst
+and the final `/d/` read as silence.
+
+```
+gate: 10 voiced frames
+  0.72s   10 voiced  +0 over   'Claude.'
+  0.66s   11 voiced  +1 over   'Are illegal.'
+  0.75s   18 voiced  +8 over   'Because.'
+```
+
+One frame quicker and the word is discarded before the model sees it — no transcript, no
+recording, nothing to debug. That is the failure mode people hit as "short words don't
+register", and the answer is `--min-speech 0.15` (or in the config file, where it belongs
+if you dictate single words at all).
+
+It stays at 0.3 by default because the gate is a duration heuristic standing in for a
+detector that can't tell speech from a keyboard clack — an RMS threshold measures
+loudness, not voice, so the only cheap signal for "that was junk" is that junk is short.
+0.15 is still five frames, comfortably above a click and above the 120ms cough the gate
+was written for. A speech-probability VAD (Silero) is the real fix and would let this go
+to near zero; it isn't here yet.
 
 ### Partials and adaptive cadence
 

@@ -28,8 +28,8 @@ def frames(spec):
     return out
 
 
-def run(spec, cadence=None, threshold=0.01):
-    return list(segment_utterances(iter(frames(spec)), threshold, cadence=cadence))
+def run(spec, cadence=None, threshold=0.01, **kw):
+    return list(segment_utterances(iter(frames(spec)), threshold, cadence=cadence, **kw))
 
 
 # ---------------------------------------------------------------- VAD
@@ -60,6 +60,27 @@ def test_brief_pause_does_not_split():
 def test_blip_dropped():
     """A 120ms cough must not reach the model, despite pre-roll padding it past 1s."""
     assert run([(False, 1), (True, 0.12), (False, 2)]) == []
+
+
+def test_min_speech_moves_the_gate():
+    """The gate is a duration heuristic, and it cuts real words.
+
+    A quick "Claude" measures ten voiced frames -- exactly the 0.3s default, no margin --
+    because only the vowel clears an RMS threshold while the /kl/ burst and final /d/
+    read as silence. So the gate has to be movable, in both directions.
+    """
+    short = [(False, 1), (True, 0.18), (False, 2)]
+    assert run(short) == []
+    assert len(run(short, min_speech=0.15)) == 1
+    # And up: raising it past an utterance discards one that the default keeps.
+    assert len(run([(False, 1), (True, 0.5), (False, 2)])) == 1
+    assert run([(False, 1), (True, 0.5), (False, 2)], min_speech=1.0) == []
+
+
+def test_min_speech_zero_keeps_anything_that_opened():
+    """0 is not "off": the 90ms that opens an utterance is still required."""
+    assert len(run([(False, 1), (True, 0.12), (False, 2)], min_speech=0.0)) == 1
+    assert run([(False, 3)], min_speech=0.0) == []
 
 
 def test_flushes_when_stream_ends_mid_utterance():

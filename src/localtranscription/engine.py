@@ -21,7 +21,8 @@ from .backends import (
 from . import paths
 from .recorder import SessionRecorder
 from .sources import make_source
-from .vad import SAMPLE_RATE, Cadence, Chunk, segment_utterances
+from .vad import (MIN_SPEECH_SEC, SAMPLE_RATE, Cadence, Chunk,
+                  segment_utterances)
 
 LANGUAGES = [
     "Chinese", "English", "Cantonese", "Arabic", "German", "French", "Spanish",
@@ -69,6 +70,8 @@ class Config:
     wav: Optional[Path] = None
     threshold: Optional[float] = None
     cadence: Cadence = field(default_factory=Cadence)
+    # Voiced audio an utterance needs before it is one. See vad.MIN_SPEECH_SEC.
+    min_speech: float = MIN_SPEECH_SEC
     record: bool = True
     record_dir: Path = field(default_factory=paths.record_dir)
     # How provisional passes are computed.
@@ -321,7 +324,7 @@ def run_session(cfg: Config, hooks, backend=None, stop: Optional[threading.Event
             hooks.ready(threshold)
             for chunk in segment_utterances(
                 source.frames(stop), threshold, on_level=hooks.level, cadence=cfg.cadence,
-                incremental=stream is not None,
+                incremental=stream is not None, min_speech=cfg.min_speech,
             ):
                 worker.submit(chunk)
     finally:
