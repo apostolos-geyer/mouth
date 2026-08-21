@@ -16,7 +16,14 @@ research: docs/research/2026-08-21-module-boundaries.md
 
 Research this rests on: [`docs/research/2026-08-21-module-boundaries.md`](../research/2026-08-21-module-boundaries.md).
 Every uv mechanism named below was executed against uv 0.9.16 before being written down;
-§2 of the research doc has the runs.
+§2 of the research doc has the runs, and §1.3 has the call graph.
+
+> **Revision, 2026-08-21.** The first version of this plan was written from an import
+> graph. Extracting the actual call graph — statically, then by tracing a real
+> `lt transcribe --speakers` — changed three things in it: `formats.py` turned out to
+> call into `diarize` (D7 below), the heaviest boundary traffic runs *from* core *into*
+> the CLI rather than the reverse (§3.4), and the interface carrying that traffic is a
+> docstring rather than a type (D8). Slices 1–3 are unchanged.
 
 ---
 
@@ -55,6 +62,9 @@ Read after shipping, in this order:
    `lt`, with edits to **core** picked up without a reinstall — verified behaviour, not a
    hope (research §2.3).
 4. The four checks in README §Checks are still clean and still one command each.
+5. Re-running the call-graph extraction after slice 4 shows **zero `core → diarize`
+   import edges** and the same `core → cli` call edges as today, now going through a
+   declared protocol instead of a docstring.
 
 ### Scope
 
@@ -91,19 +101,23 @@ graph TD
     root -->|"members = packages/*"| cliPkg
     root -->|"members"| diaPkg
     root -->|"members"| corePkg
-    app -->|"depends on"| core
-    app -.->|"extra: diarize"| dia
-    dia -->|"depends on"| core
-    future -.->|"will depend on"| core
+    app -->|"imports"| core
+    app -.->|"imports · extra: diarize"| dia
+    dia -->|"imports"| core
+    core ==>|"calls back — 1,083 of 1,135 cross-seam calls"| app
+    future -.->|"will import"| core
     future -.->|"never"| app
 
     classDef ghost fill:none,stroke:#b07a35,stroke-dasharray:4 3,color:#b07a35;
     class future ghost;
 ```
 
-*All three ship into `localtranscription.*`. The arrows are the enforceable part: an
-install that omits a member makes its modules unimportable, which is what turns
-"core must not import typer" into a failing test.*
+*All three ship into `localtranscription.*`. Thin arrows are imports and are the
+enforceable part: an install that omits a member makes its modules unimportable, which is
+what turns "core must not import typer" into a failing test. **The thick arrow is calls,
+and it points the other way** — measured, not assumed (research §1.3). Core never imports
+the CLI; it calls back through callables the front end handed it. That is why a websocket
+server can be a peer of `app.py` rather than a layer under it.*
 
 Import paths do not change. `from localtranscription.engine import run_session` resolves
 the same before and after, because `localtranscription/` becomes a PEP 420 implicit
@@ -140,6 +154,8 @@ Three consequences worth naming:
 | D4 | One `tests/` at the repo root | Per-package `tests/`, run with `uv run --package X pytest` | The suite is 2,050 lines, offline, and cross-cutting — `test_core.py` alone touches `config`, `backends`, `formats`, `recorder`, `vad`, `paths` and `tune`. The root venv holds every member, so the suite runs unchanged. |
 | D5 | `config.py` stays whole, in the CLI | Split its file-reading half into core | `default_map`, `EXCLUDED`, `reaches` and `template` are all Click-shaped. The server will be launched *by* the CLI (`lt serve`), so it receives a built `Config` rather than reading the file itself. Revisit if that stops being true. |
 | D6 | Lint and type configuration stays in the root `pyproject.toml` | Per-member tool config | Verified: `ty` reports a cross-package type error with both files named, and `ruff` honours `"**/app.py"` per-file-ignores from the root. One config, four commands, unchanged. |
+| D7 | `formats.write_outputs` and `speaker_md` take **already-labelled** words; the `from .diarize import label_words` at `formats.py:88,164` goes away | Move `Turn` and `label_words` into core; or put `formats.py` in the diarize package | This is the only `core → diarize` import in the tree and the call graph shows the primary command path hits it (research §1.3). It is also nearly dead already: in the traced run `write_outputs`' own call site did **not** fire, because `_align_blocks` had labelled every word — which the comment at `formats.py:168` says it relies on. Making pre-labelling the contract deletes the fallback rather than relocating it. `formats` keeps reading `Turn.start/.end/.speaker/.duration` duck-typed, which needs no import and is fine. |
+| D8 | Declare the `hooks` contract as `engine.SessionHooks`, a `typing.Protocol` | Leave it as the docstring at `engine.py:322-330` | It carries 1,083 of 1,135 cross-seam calls and has three implementations, none of which any checker can verify against it. A fourth is the entire point of this refactor. Same shape as `Backend`, `Biasable` and `Aligning`, which the codebase already expresses this way and which `56002b1` chose deliberately over flags. |
 
 ### 2.4 Configuration that has to move
 
@@ -197,10 +213,12 @@ Three consequences worth naming:
   uv.lock                             # one lockfile, whole workspace
 ```
 
-### 3.2 The three signatures that change
+### 3.2 The five signatures that change
 
-Each replaces a `typer`/`rich` coupling with a callback. No behaviour changes; the CLI
-supplies callbacks that do exactly what the inline `console` calls did.
+The first three replace a `typer`/`rich` coupling with a callback; the last two are D8
+and D7. No behaviour changes: the CLI supplies callbacks that do exactly what the inline
+`console` calls did, `SessionHooks` is a type over calls that already happen, and D7
+deletes a fallback the traced run showed does not fire.
 
 ```python
 # localtranscription/engine.py        (core)      <- app.py:197-267
@@ -249,34 +267,109 @@ def speaker_holds(turns, duration: float) -> list[tuple[int, float, float]]: ...
     # than computes the table at app.py:1121-1127.
 ```
 
+```python
+# localtranscription/engine.py        (core)      <- D8, the docstring at engine.py:322
+
+@runtime_checkable
+class SessionHooks(Protocol):
+    """What run_session calls back into. The front end supplies this.
+
+    Carries 1,083 of the 1,135 cross-package calls in a traced `lt transcribe
+    --speakers` run -- the busiest interface in the program, and until now the only
+    one described in prose rather than in types.
+    """
+
+    def status(self, msg: str) -> None: ...
+    def ready(self, threshold: float) -> None: ...
+    def bind_stop(self, stop: threading.Event) -> None: ...
+    def level(self, rms: float, in_speech: bool) -> None: ...      # ~33/second
+    def segment(self, seg: Segment) -> None: ...
+    def error(self, offset: float, msg: str) -> None: ...
+
+# Optional halves stay optional and stay probed with getattr, as they are today:
+# interim(Segment), attach(worker, recorder), source(source). Putting them on the
+# Protocol would make every front end that skips one fail the isinstance check --
+# the same argument backends.py:186-190 already makes for Streaming and Drafting.
+```
+
+```python
+# localtranscription/formats.py       (core)      <- D7
+
+def write_outputs(
+    out_dir: Path, segments, words, stem=None, turns=None
+) -> Path | None: ...
+    # `words` carry their own "speaker" when turns are given. The lazy
+    # `from .diarize import label_words` at :88 and :164 goes; the caller labels.
+    # In the traced run the :164 site never fired, because _align_blocks had
+    # already labelled every word -- which is what the comment at :168 relies on.
+```
+
 ### 3.3 Call stack for `lt transcribe --speakers`, before → after
 
+Not sketched — traced. `sys.setprofile` over a real run against the fixture, mlx backend,
+all seven outputs written; `x N` is the measured call count.
+
 ```diff
-  app.transcribe()
+  app.transcribe()                                                 [cli]
 - ├── app._config()                          raises typer.BadParameter
 + ├── app._config()                          catches InvalidConfig -> BadParameter
 + │   └── engine.build_config()              core; no typer
 - ├── app._diarize_audio(audio, n)           console.status x2, console.print xN
-- │   └── diarize.offline.OfflineDiarizer.diarize()
+- │   ├── diarize.offline.OfflineDiarizer.__init__()    x1
+- │   │   └── app._diarize_audio.<lambda>    x2   <-- core calling back into cli
+- │   ├── diarize.offline.OfflineDiarizer.diarize()     x1
+- │   └── <genexpr> -> diarize.Turn.duration            x13
 + ├── app._diarize(audio, n)                 console.status + console.print only
-+ │   ├── diarize.run.diarize_audio(on_status=...)
-+ │   │   └── diarize.offline.OfflineDiarizer.diarize()
-+ │   └── diarize.run.speaker_holds()        the numbers app.py used to compute inline
-  ├── engine.run_session(cfg, Hooks())
++ │   ├── diarize.run.diarize_audio(on_status=...)      x1
++ │   │   └── diarize.offline.OfflineDiarizer.diarize() x1
++ │   └── diarize.run.speaker_holds()        the x13 Turn.duration tally, moved
+  ├── app._load() -> backends.load_backend()             x1
+  │   └── backends.MlxBackend.__init__() -> _load.<lambda>   x2
+  ├── engine.run_session(cfg, Hooks())                   x1
+  │   ├── vad.segment_utterances()                       x11
+- │   │   └── app.transcribe.Hooks.level()   x1066   <-- 94% of all seam traffic
++ │   │   └── SessionHooks.level()           x1066   same call, now a declared type
+  │   ├── engine.Transcriber._transcribe_one() -> Hooks.segment()   x10
+  │   └── run_session -> Hooks.{status, source, ready, bind_stop}   x1 each
 - ├── app._align_blocks(backend, ...)        console.status, console.print
-- │   ├── diarize.speaker_blocks()
-- │   └── backend.align()                    x blocks
+- │   ├── diarize.speaker_blocks()                      x1
+- │   └── backends.MlxBackend.align()                   x9
 + ├── app._time_words(...)                   console.status + console.print only
 + │   └── diarize.timing.align_by_speaker(on_block=..., on_error=...)
-+ │       ├── diarize.speaker_blocks()
-+ │       └── backend.align()                x blocks
-  └── app._report()                          write_outputs + console.print
++ │       ├── diarize.speaker_blocks()                  x1
++ │       └── backend.align()                           x9
+  └── app._report() -> formats.write_outputs()          x1
+      ├── formats.rttm() -> diarize.Turn.duration       x13   (duck-typed, stays)
+-     └── formats.speaker_md() -> diarize.label_words() x1    <-- core -> diarize IMPORT
++     └── formats.speaker_md(labelled_words)            x0    D7: the import goes
 ```
 
-Every `-` line is a function that cannot be called without importing `typer`. Every `+`
-line under it can.
+Every `-` line marked `<--` is a coupling the import graph did not show.
 
----
+### 3.4 The direction of the seam
+
+The measured cross-package traffic, by direction:
+
+| Direction | Runtime edges | Runtime calls | Share |
+|---|---:|---:|---:|
+| `core → cli` (callbacks) | 8 | 1,083 | 95.4% |
+| `cli → core` | 11 | 19 | 1.7% |
+| `cli → diarize` | 5 | 17 | 1.5% |
+| `core → diarize` | 2 | 14 | 1.2% |
+| `diarize → cli` (callback) | 1 | 2 | 0.2% |
+
+Three consequences for this plan:
+
+1. **The boundary is already a callback interface**, not a layered API. `cli → core` is
+   19 calls in a whole session — it is setup. The traffic is core calling out. That is
+   the shape a server wants, and it means the server is a **peer** of `app.py`, not a
+   layer beneath it. D8 makes that interface checkable.
+2. **`vad.segment_utterances → hooks.level` is 1,066 calls, one per 30ms frame.** It is
+   the only hot path across the seam. Nothing in this plan may put work on it — no
+   marshalling, no queue, no per-frame allocation. A websocket server must decimate or
+   batch on its own side of that callback.
+3. **`core → diarize` is the only wrong-direction *import*.** 14 calls, two edges, and
+   D7 removes both.
 
 ## 4. Vertical slices
 
@@ -291,6 +384,18 @@ uv sync --extra mlx --extra diarize
 uv run ruff check . && uv run ruff format --check .
 uv run ty check
 uv run pytest tests/ -q
+```
+
+All four are green at the base commit. `ruff format --check` was **not**, until it was
+fixed on its own just before slice 1 — it had been failing since `9d8fbf5` on one
+97-character line. A slice that fails a check it did not break teaches nothing, so the
+baseline is restored first and separately.
+
+Slices 3 and 4 add a fifth, which is the point of the exercise:
+
+```sh
+uv run python tools/callgraph.py packages/*/src/localtranscription   # import-level seam
+uv run python tools/trace_calls.py -- transcribe FILE --speakers     # call-level seam
 ```
 
 ### Slice 1 — the workspace exists, nothing else changes
@@ -366,9 +471,10 @@ The nine core modules move to `packages/localtranscription-core/`. `app.py`, `tu
 
 ### Slice 4 — move the four contracts out of `app.py`
 
-The three signatures in §3.2, and the call stack in §3.3. `app.py` keeps thin wrappers
+The five signatures in §3.2, and the call stack in §3.3. `app.py` keeps thin wrappers
 that catch and print. This is the slice that makes the boundary worth having; it is also
-the only one that edits Python, so it is last and separable.
+the only one that edits Python, so it is last and separable. D7 (`formats` stops importing
+`diarize`) and D8 (`SessionHooks` becomes a Protocol) land here.
 
 **Automated**
 - [ ] `engine.build_config` rejects each of the six bad inputs `app._config` rejects,
@@ -378,6 +484,11 @@ the only one that edits Python, so it is last and separable.
       `interview-excerpt.json`, so this checks correctness, not just no-change
 - [ ] `on_error` fires and the pass continues when one block's `align()` raises
 - [ ] `grep -rn "typer\.\|console\." packages/localtranscription-core/src packages/localtranscription-diarize/src` returns nothing
+- [ ] `grep -rn "from \.diarize\|from localtranscription.diarize" packages/localtranscription-core/src` returns nothing (D7)
+- [ ] all three existing hook implementations satisfy `isinstance(hooks, SessionHooks)` (D8)
+- [ ] **the call graph is re-extracted** and diffed against the one in research §1.3:
+      `core → diarize` drops from 2 edges to 0, and the `core → cli` edges are unchanged
+      in count and call volume. A new edge in either direction is a finding, not a pass.
 
 **Manual**
 - [ ] `lt transcribe FILE --speakers` output is byte-identical to `118ae70`'s for the
@@ -433,6 +544,11 @@ graph LR
 `Backend.context` is already designed for this — `backends.py:145-160` says the attribute
 exists rather than a `transcribe()` argument precisely so a front end can change it while
 the session runs, and `tui.py:259` does. `stop` is handed out through `hooks.bind_stop`.
+
+So the protocol's two directions are asymmetric in a way worth stating before designing
+it: **out** is a firehose (1,066 `level` callbacks per 32 seconds, plus interims and
+finals), and **in** is two writes. A message protocol that treats them as symmetric will
+get the outbound side wrong.
 Everything else — `threshold`, `cadence`, `min_speech`, `partials`, `language`, `model` —
 is read once, before or at the top of `run_session`'s loop.
 
