@@ -136,6 +136,29 @@ Getting there found two bugs worth naming, because both failed silently:
 One decode and one pass over the file — running `lt diarize` afterwards would re-read and
 re-analyse it, and leave you pasting a generated filename between two commands.
 
+**The diarizer runs first**, and its speaker changes become extra boundaries for the
+segmenter. Silence is the only boundary a VAD can find on its own, which is enough for a
+microphone and not enough for a recording someone edited the pauses out of — with no
+silence to close on, utterances run to the 30s cap and each one holds several people
+talking. On the interview above: 58 utterances before, **117 after**, 24 speaker blocks
+before, **69 after**, and the same word count, because cuts move boundaries rather than
+dropping audio. What was one two-minute block attributed to whoever held most of it is now
+the conversation it actually was:
+
+```
+**speaker 1**  [00:00]
+...Soul's pretty good. Have you tried it out yet?
+
+**speaker 0**  [00:08]
+Nah, well, I've used it a little bit, but like not so much...
+
+**speaker 1**  [00:51]
+Yeah.
+```
+
+That reordering is why `--speakers` decodes the file before the session starts and hands
+the audio to it, rather than reading it twice.
+
 The prose is attributed per **utterance** and rendered from the utterance's own text, which
 took two goes to get right. Per *word* (the obvious choice, since only words carry
 timings), every short function word landing in a gap between turns came back unattributed

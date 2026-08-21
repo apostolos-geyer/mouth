@@ -40,6 +40,7 @@ from .sources import cached_threshold, remember_threshold
 # config's 0.65, and because the flag always wins, the documented value was dead
 # everywhere except the tests.
 _DIA = OfflineConfig()
+from .diarize import speaker_changes
 from .engine import LANGUAGES, Config, run_session
 from .formats import fmt_clock, write_outputs
 from .vad import MAX_UTTERANCE_SEC, MIN_SPEECH_SEC, Cadence
@@ -953,6 +954,21 @@ def transcribe(
     if not audio_file.exists():
         raise typer.BadParameter(f"{audio_file}: no such file")
 
+    # Diarize first when asked, so speaker changes can cut utterances. Silence is the
+    # only boundary the VAD finds on its own, and a recording with the pauses edited out
+    # has almost none: 58 utterances for 28 minutes, each holding several people. The
+    # decoded audio is handed to the session so the file is read once.
+    turns, source = None, None
+    if speakers or num_speakers is not None:
+        from .audio import load as load_audio
+        from .sources import make_source
+
+        audio = load_audio(audio_file)
+        turns = _diarize_audio(audio, num_speakers)
+        cfg.cuts = speaker_changes(turns)
+        console.print(f"  [dim]{len(cfg.cuts)} speaker changes to cut on[/]")
+        source = make_source(None, audio_file, realtime=False, audio=audio).open()
+
     backend_obj = _load(cfg)
 
     from rich.progress import (
@@ -1016,7 +1032,7 @@ def transcribe(
 
     hooks = Hooks()
     try:
-        result = run_session(cfg, hooks, backend=backend_obj)
+        result = run_session(cfg, hooks, backend=backend_obj, source=source)
     finally:
         bar.stop()
 
@@ -1027,9 +1043,6 @@ def transcribe(
             f"{hooks.seconds / took:.0f}x realtime[/]"
         )
 
-    turns = None
-    if speakers or num_speakers is not None:
-        turns = _diarize_audio(hooks.audio, num_speakers)
     _report(cfg, *result, turns=turns)
 
 

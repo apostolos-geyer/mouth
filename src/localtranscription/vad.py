@@ -89,6 +89,7 @@ def segment_utterances(
     cadence: Cadence | None = None,
     incremental: bool = False,
     min_speech: float = MIN_SPEECH_SEC,
+    cuts=(),
 ):
     """Cut a stream of fixed-size frames into utterances.
 
@@ -106,6 +107,12 @@ def segment_utterances(
 
     min_speech is the voiced audio an utterance needs to count at all. Lower it for
     single words, at the cost of letting shorter noise through to the model.
+
+    cuts are extra times, in seconds, where an open utterance must end -- speaker changes,
+    in practice. Silence is the only boundary this can find on its own, which is enough
+    for a microphone and not enough for a recording someone has edited the pauses out of:
+    with no silence to close on, utterances run to MAX_UTTERANCE_SEC and each one holds
+    several people talking. A cut is a boundary the audio does not contain.
     """
     preroll = deque(maxlen=PREROLL_FRAMES)
     utterance: list[np.ndarray] = []
@@ -119,6 +126,8 @@ def segment_utterances(
     next_interim = None
 
     min_voiced = min_speech * SAMPLE_RATE / FRAME_LEN
+    pending = sorted(float(c) for c in cuts)
+    cut_i = 0
 
     def build(utterance, silence_run, voiced):
         if voiced < min_voiced:
@@ -132,6 +141,12 @@ def segment_utterances(
         now = consumed * FRAME_LEN / SAMPLE_RATE
         rms = float(np.sqrt(np.mean(frame**2)))
         loud = rms > threshold
+        # Consume every cut this frame has reached. One landing in silence is simply
+        # gone -- the boundary it marks already exists.
+        at_cut = False
+        while cut_i < len(pending) and pending[cut_i] <= now:
+            cut_i += 1
+            at_cut = True
         if on_level is not None:
             on_level(rms, in_speech)
 
@@ -157,7 +172,7 @@ def segment_utterances(
             silence_run += 1
         utt_sec = len(utterance) * FRAME_LEN / SAMPLE_RATE
 
-        if silence_run >= SILENCE_FRAMES_TO_END or utt_sec >= MAX_UTTERANCE_SEC:
+        if silence_run >= SILENCE_FRAMES_TO_END or utt_sec >= MAX_UTTERANCE_SEC or at_cut:
             audio = build(utterance, silence_run, voiced)
             if audio is not None:
                 yield Chunk(audio, utt_start, final=True)

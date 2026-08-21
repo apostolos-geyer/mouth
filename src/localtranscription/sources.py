@@ -133,12 +133,18 @@ class WavSource:
 
     path: Path
     realtime: bool = False
+    #: Already-decoded audio, for a caller that had to look at the file before the session
+    #: started -- `lt transcribe --speakers` diarizes first, to know where the speaker
+    #: changes are. Without this the file would be decoded twice.
+    preloaded: np.ndarray | None = None
 
     def open(self):
         # audio.load is the same decoder `lt diarize` uses: it downmixes and resamples
         # anything PyAV can read. Rolling a second, stricter loader here meant --wav
         # refused files the tool could already open one module away.
-        self._audio = load_audio(self.path)
+        self._audio = (
+            self.preloaded if self.preloaded is not None else load_audio(self.path)
+        )
         return self
 
     def close(self):
@@ -179,5 +185,10 @@ class WavSource:
             yield self._audio[i : i + FRAME_LEN]
 
 
-def make_source(mic: int | None, wav: Path | None, realtime: bool = False):
-    return WavSource(wav, realtime=realtime) if wav else MicSource(mic)
+def make_source(
+    mic: int | None,
+    wav: Path | None,
+    realtime: bool = False,
+    audio: np.ndarray | None = None,
+):
+    return WavSource(wav, realtime=realtime, preloaded=audio) if wav else MicSource(mic)

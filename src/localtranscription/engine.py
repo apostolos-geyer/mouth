@@ -102,6 +102,9 @@ class Config:
     cadence: Cadence | None = field(default_factory=Cadence)
     # Voiced audio an utterance needs before it is one. See vad.MIN_SPEECH_SEC.
     min_speech: float = MIN_SPEECH_SEC
+    # Extra times where an utterance must end, on top of silence: speaker changes, from a
+    # diarizer that ran first. See vad.segment_utterances.
+    cuts: tuple[float, ...] = ()
     record: bool = True
     record_dir: Path = field(default_factory=paths.record_dir)
     # How provisional passes are computed.
@@ -313,12 +316,17 @@ class Transcriber:
             self.recorder.add(chunk.audio, chunk.start, text, words, self.language, took)
 
 
-def run_session(cfg: Config, hooks, backend=None, stop: threading.Event | None = None):
+def run_session(
+    cfg: Config, hooks, backend=None, stop: threading.Event | None = None, source=None
+):
     """Drive one capture session. Returns (segments, words, recorder).
 
     hooks needs: status(str), ready(threshold), bind_stop(Event), level(rms, in_speech),
     segment(Segment), error(offset, msg); optionally interim(Segment) and attach(worker),
     and optionally source(source) to see the opened source before frames are pulled.
+
+    Pass a prepared source to skip opening one here -- a caller that had to read the file
+    before the session started (to diarize it, say) has the audio already.
 
     Pass a preloaded backend to skip loading here -- the TUI must, because loading spawns
     a subprocess and Textual's replacement stdout has no real fileno for it to inherit
@@ -349,7 +357,7 @@ def run_session(cfg: Config, hooks, backend=None, stop: threading.Event | None =
     if partials.mode != cfg.partials:
         hooks.status(f"{backend.name} cannot do {cfg.partials} partials; re-encoding them")
 
-    source = make_source(cfg.mic, cfg.wav, realtime=cfg.realtime).open()
+    source = source or make_source(cfg.mic, cfg.wav, realtime=cfg.realtime).open()
     # A file front end wants to know how much audio there is before any of it arrives.
     opened = getattr(hooks, "source", None)
     if opened is not None:
@@ -385,6 +393,7 @@ def run_session(cfg: Config, hooks, backend=None, stop: threading.Event | None =
                 cadence=cfg.cadence,
                 incremental=partials.incremental,
                 min_speech=cfg.min_speech,
+                cuts=cfg.cuts,
             ):
                 worker.submit(chunk)
     finally:

@@ -108,3 +108,19 @@ def merge_turns(
         else:
             merged.append(t)
     return [t for t in merged if t.duration >= min_duration]
+
+
+def speaker_changes(turns) -> tuple[float, ...]:
+    """The times a different voice takes over, as boundaries for the segmenter.
+
+    Only where the speaker actually differs from the previous turn: a diarizer emits
+    several consecutive turns for one person talking through their own pauses, and cutting
+    on those would chop a sentence for no gain. The first turn is not a boundary either --
+    nothing precedes it.
+    """
+    out, previous = [], None
+    for turn in sorted(turns, key=lambda t: t.start):
+        if previous is not None and turn.speaker != previous:
+            out.append(float(turn.start))
+        previous = turn.speaker
+    return tuple(out)

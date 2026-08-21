@@ -1591,3 +1591,49 @@ def test_speech_at_the_median_is_what_breaks_the_median():
     edited = np.concatenate([np.full(25, 0.004), np.full(75, 0.2)])
     assert ambient_threshold(edited) > 0.5, "3x median lands above the speech"
     assert ambient_threshold(edited, quiet=10.0) < 0.05, "the floor is still there"
+
+
+# --------------------------------------------- cutting on speaker changes, not just silence
+
+
+def test_a_cut_ends_an_utterance_with_no_silence_to_end_it():
+    """The whole point: continuous speech, two speakers, one boundary the audio lacks.
+
+    A recording with the pauses edited out gives the VAD nothing to close on, so one
+    utterance runs to the 30s cap holding several people. Measured on a 28-minute
+    interview: 58 utterances before, 117 after, and the same word count -- the cuts move
+    boundaries, they do not drop audio.
+    """
+    continuous = [(False, 1), (True, 6), (False, 2)]
+    assert len(run(continuous)) == 1
+    cut = run(continuous, cuts=[3.0, 5.0])
+    assert len(cut) == 3, [round(c.start, 2) for c in cut]
+    # Still the same audio, minus the pre-roll each new utterance no longer needs.
+    assert sum(len(c.audio) for c in cut) <= sum(len(c.audio) for c in run(continuous))
+
+
+def test_a_cut_landing_in_silence_changes_nothing():
+    """The boundary it marks is already there."""
+    spec = [(False, 1), (True, 1), (False, 1.5), (True, 1), (False, 1.5)]
+    assert len(run(spec, cuts=[2.6])) == len(run(spec)) == 2
+
+
+def test_cuts_do_not_disturb_the_utterances_they_do_not_touch():
+    spec = [(False, 1), (True, 2), (False, 1.5)]
+    plain, cut = run(spec), run(spec, cuts=[90.0])
+    assert len(plain) == len(cut) == 1
+    assert len(plain[0].audio) == len(cut[0].audio)
+
+
+def test_only_a_change_of_speaker_is_a_cut():
+    """A diarizer emits several turns for one person talking through their own pauses.
+    Cutting on those would chop a sentence for nothing."""
+    from localtranscription.diarize import speaker_changes
+    from localtranscription.diarize.offline import Turn
+
+    turns = [Turn(0, 1, 0), Turn(1, 2, 0), Turn(2, 3, 1), Turn(3, 4, 0)]
+    assert speaker_changes(turns) == (2.0, 3.0)
+    assert speaker_changes([Turn(0, 5, 0)]) == ()
+    assert speaker_changes([]) == ()
+    # Order of arrival does not matter; the boundaries are in time order.
+    assert speaker_changes(list(reversed(turns))) == (2.0, 3.0)
