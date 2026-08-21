@@ -172,8 +172,25 @@ the reference SRT's own timings, 145 uniquely-matched words land a median +1.38s
 their cue's start — which is what correct looks like, since a cue there averages 3.03s and
 a word inside one starts partway through it.
 
-`.words.json` and `.speakers.json` carry `{text, start, end, speaker}` per word, which is
-what a caption renderer wants.
+`.words.json` and `.speakers.json` carry `{text, start, end, speaker}` per word. That is
+deliberately the whole contract: **word starts are what gets persisted, cue starts are
+not.** Grouping words into cues means gap and line-length heuristics that belong to
+whatever is rendering them, and baking one tool's answer into the file discards the
+information the next tool needs. The `.srt` here is a convenience, not the source of
+truth.
+
+Two properties of those timings worth knowing before you build on them, measured over the
+28-minute interview:
+
+- **Within a block the aligner tiles.** 5418 of 6504 neighbouring words touch exactly —
+  one word's end is the next one's start. Real pauses show up between blocks, not inside
+  them.
+- **About 6% of words have zero duration** (400 of 6505), almost all short function words
+  — 246 of them are one or two characters. This is the aligner, not the block pass: the
+  rate is 6.1% either way. Their *start* is real and correctly ordered; the aligner simply
+  gave them no measurable extent. A renderer that needs a visible span should extend to
+  the next word's start, which is exact here given the tiling — but that is a rendering
+  decision and this file does not make it.
 
 The prose is attributed per **utterance** and rendered from the utterance's own text, which
 took two goes to get right. Per *word* (the obvious choice, since only words carry
