@@ -36,7 +36,7 @@ neither, and that is the point of having both.
 > and built its import inventory with a grep anchored at column 0 — so every
 > function-scope import was invisible to it. Both are fixed here, and the fix cost two
 > conclusions: `formats.py` is not a leaf, and the heaviest boundary traffic runs from
-> core *into* the CLI rather than out of it.
+> engine *into* the CLI rather than out of it.
 
 ---
 
@@ -174,26 +174,39 @@ uv run python tools/trace_calls.py -- \
 # 106 words timed across 9 speaker blocks · all seven output files written
 ```
 
-110 distinct call edges, of which **109 are invisible to the static pass**. A separate
-trace over `pytest tests/ -q` produced 163 edges and does not reach the session loop,
-because the suite's `hooks` implementations live in the tests rather than in `src/`.
+110 distinct call edges. **53 of them are absent from the static set**; the other 57 the
+AST pass had already found. The 53 are the calls that go through a variable — `hooks.*`,
+`backend.*`, `source.*` — and they carry almost all of the cross-boundary volume.
+
+A separate trace over `pytest tests/ -q` gives 163 edges and reaches neither `run_session`
+nor any `hooks` callback — the suite's hook implementations live in the tests, outside
+`src/`, so the profiler's `src/mouth` filter never sees the call. That is why the command
+above, not the suite, is the thing traced.
+
+**Which backend is loaded changes what gets traced**, so the run has to say. The numbers
+here are the mlx path, which is what the config file selects: `backend = "mlx"`,
+`qwen3-asr-1.7b-q8g64`, `partials = "x-draft"`. With no config the same command loads
+torch and takes a different route through the same code — 95 edges instead of 110, 107
+timed words instead of 106, and no per-block alignment at all, because `TorchBackend`
+does not satisfy `Aligning` and the command says so (`torch times utterances, not
+blocks`). §1.4's last paragraph depends on that difference.
 
 #### The seam, as counted
 
-Grouping modules by the split proposed in the plan (`core` / `diarize` / `cli`):
+Grouping modules by the split proposed in the plan (`engine` / `diarize` / `cli`):
 
 | Direction | Static edges | Runtime edges | Runtime calls | Share |
 |---|---:|---:|---:|---:|
-| **`core → cli`** (callbacks) | **0** | **8** | **1,083** | **95.4%** |
-| `cli → core` | 50 | 11 | 19 | 1.7% |
+| **`engine → cli`** (callbacks) | **0** | **8** | **1,083** | **95.4%** |
+| `cli → engine` | 50 | 11 | 19 | 1.7% |
 | `cli → diarize` | 8 | 5 | 17 | 1.5% |
-| `core → diarize` | 2 | 2 | 14 | 1.2% |
+| `engine → diarize` | 2 | 2 | 14 | 1.2% |
 | `diarize → cli` (callback) | 0 | 1 | 2 | 0.2% |
 | intra-package | 173 | 83 | — | — |
 
-**96% of cross-boundary call volume runs from core back into the CLI.** Every one of
+**96% of cross-boundary call volume runs from engine back into the CLI.** Every one of
 those edges is a callback the front end supplied — six `hooks` methods and two
-`on_status` lambdas. None of them is an import; the import direction stays `cli → core`.
+`on_status` lambdas. None of them is an import; the import direction stays `cli → engine`.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#e9efee","primaryTextColor":"#16211f","primaryBorderColor":"#7d8c89","lineColor":"#7d8c89","fontFamily":"IBM Plex Mono, ui-monospace, monospace","fontSize":"13px"}}}%%
@@ -203,7 +216,7 @@ graph LR
       onstatus["_load / _diarize_audio<br/>on_status lambdas"]
       cmd["app.transcribe"]
     end
-    subgraph core["core"]
+    subgraph engine["engine"]
       vadm["vad.segment_utterances"]
       eng["engine.run_session<br/>Transcriber._transcribe_one"]
       be["backends.load_backend<br/>MlxBackend.__init__"]
@@ -232,11 +245,14 @@ the 32-second fixture, which is the arithmetic check that the trace is complete.
 
 **`formats.py` calls into `diarize`, and the primary command path exercises it.**
 `formats.speaker_md` imports `label_words` at function entry and called it once in the
-traced run; `formats.rttm` reads `Turn.duration` 13 times. `write_outputs`'s own
-`label_words` call site did **not** fire, because `_align_blocks` had already attached a
-speaker to every word — which is what the comment at `formats.py:168` says it relies on.
-So the coupling is: one live call, one near-dead fallback, and a duck-typed read of a
-`diarize` type.
+traced run; `formats.rttm` reads `Turn.duration` 13 times.
+
+Whether `write_outputs`'s *own* `label_words` call site fires depends on the backend, and
+that is worth stating precisely because a plan decision rests on it. On **mlx** it does
+not fire: `_align_blocks` has already attached a speaker to every word, which is what the
+comment at `formats.py:168` says it relies on. On **torch** it fires once — there is no
+per-block alignment to pre-label anything, so the fallback is the only thing labelling
+the words. The same site, live on one backend and dead on the other.
 
 **The `hooks` protocol is the load-bearing interface and it is not declared anywhere.**
 Six methods, described in a docstring at `engine.py:322-330`, implemented three times as
@@ -414,7 +430,7 @@ uv tool install -e './packages/lt-cli[extra]' --force
 ```
 
 installs `lt-cli` **and its workspace siblings** editable — `_editable_impl_lt_core.pth`
-appears in the tool environment, and an edit to core's source changed the installed
+appears in the tool environment, and an edit to engine's source changed the installed
 `m`'s output on the next run. uv discovers the workspace by walking up from the member
 directory; no flag is needed.
 

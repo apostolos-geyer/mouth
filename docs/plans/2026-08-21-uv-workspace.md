@@ -21,7 +21,7 @@ Every uv mechanism named below was executed against uv 0.9.16 before being writt
 > **Revision, 2026-08-21.** The first version of this plan was written from an import
 > graph. Extracting the actual call graph — statically, then by tracing a real
 > `m transcribe --speakers` — changed three things in it: `formats.py` turned out to
-> call into `diarize` (D7 below), the heaviest boundary traffic runs *from* core *into*
+> call into `diarize` (D7 below), the heaviest boundary traffic runs *from* engine *into*
 > the CLI rather than the reverse (§3.4), and the interface carrying that traffic is a
 > docstring rather than a type (D8). Slices 1–3 are unchanged.
 
@@ -48,7 +48,7 @@ the `Cadence` rule (`app.py:197-267`), the per-speaker word-timing pass from `9d
 backend-load error conversion (`app.py:268-297`). A second front end either imports
 `typer` to reach them or reimplements them.
 
-**And one module already sits on the wrong side.** `formats.py` belongs in core and
+**And one module already sits on the wrong side.** `formats.py` belongs in engine and
 imports `diarize` from inside two function bodies — invisible in the import graph,
 exercised on the primary command path (§D7).
 
@@ -61,19 +61,19 @@ landing in `app.py` too — and nothing caught the one that already went the oth
 
 Read after shipping, in this order:
 
-1. A virtualenv with only `mouth-core` installed can run a session end to
+1. A virtualenv with only `mouth-engine` installed can run a session end to
    end. `import typer` fails in it. This is a test, not a convention —
    research §2.4 shows the namespace does not paper over a missing member.
 2. `m transcribe FILE --speakers` produces its seven output files with the same content
    as at `118ae70`, and the code that times words by speaker block is reachable without
    importing anything that draws to a terminal.
 3. `uv tool install -e './packages/mouth-cli[mlx,diarize]'` gives a live
-   `m`, with edits to **core** picked up without a reinstall — verified behaviour, not a
+   `m`, with edits to **engine** picked up without a reinstall — verified behaviour, not a
    hope (research §2.3).
 4. The four checks in README §Checks are still clean and still one command each. (One
    of them was not, at the base commit — see §4.)
-5. Re-running the call-graph extraction after slice 4 shows **zero `core → diarize`
-   import edges** and the same `core → cli` call edges as today, now going through a
+5. Re-running the call-graph extraction after slice 4 shows **zero `engine → diarize`
+   import edges** and the same `engine → cli` call edges as today, now going through a
    declared protocol instead of a docstring.
 
 ### Scope
@@ -103,20 +103,20 @@ graph TD
       dia["diarize/<br/>__init__ · coreml · offline<br/><b>+ run.py · timing.py</b>"]
     end
 
-    subgraph corePkg["mouth-core"]
-      core["engine · backends · sources · vad<br/>recorder · audio · formats<br/>paths · quantize"]
+    subgraph enginePkg["mouth-engine"]
+      engine["engine · backends · sources · vad<br/>recorder · audio · formats<br/>paths · quantize"]
     end
 
     future["mouth-server<br/><i>not in this plan</i>"]
 
     root -->|"members = packages/*"| cliPkg
     root -->|"members"| diaPkg
-    root -->|"members"| corePkg
-    app -->|"imports"| core
+    root -->|"members"| enginePkg
+    app -->|"imports"| engine
     app -.->|"imports · extra: diarize"| dia
-    dia -->|"imports"| core
-    core ==>|"calls back — 1,083 of 1,135 cross-seam calls"| app
-    future -.->|"will import"| core
+    dia -->|"imports"| engine
+    engine ==>|"calls back — 1,083 of 1,135 cross-seam calls"| app
+    future -.->|"will import"| engine
     future -.->|"never"| app
 
     classDef ghost fill:none,stroke:#b07a35,stroke-dasharray:4 3,color:#b07a35;
@@ -125,8 +125,8 @@ graph TD
 
 *All three ship into `mouth.*`. Thin arrows are imports and are the
 enforceable part: an install that omits a member makes its modules unimportable, which is
-what turns "core must not import typer" into a failing test. **The thick arrow is calls,
-and it points the other way** — measured, not assumed (research §1.3). Core never imports
+what turns "engine must not import typer" into a failing test. **The thick arrow is calls,
+and it points the other way** — measured, not assumed (research §1.3). Engine never imports
 the CLI; it calls back through callables the front end handed it. That is why a websocket
 server can be a peer of `app.py` rather than a layer under it.*
 
@@ -138,9 +138,14 @@ namespace shared by all three distributions (research §2.2).
 
 | Distribution | Modules | Runtime dependencies | Extras |
 |---|---|---|---|
-| `mouth-core` | `paths` `vad` `audio` `formats` `recorder` `sources` `backends` `engine` `quantize` | `numpy` `torch` `qwen-asr` `sounddevice` `soundfile` | `mlx` → `mlx-qwen3-asr` |
-| `mouth-diarize` | `diarize/` | `mouth-core` `coremltools` `scipy` | — |
-| `mouth-cli` | `app` `tui` `tune` `config` | `mouth-core` `typer` `rich` `textual` | `mlx` → `core[mlx]`; `diarize` → `mouth-diarize` |
+| `mouth-engine` | `paths` `vad` `audio` `formats` `recorder` `sources` `backends` `engine` `quantize` | `numpy` `torch` `qwen-asr` `sounddevice` `soundfile` | `mlx` → `mlx-qwen3-asr` |
+| `mouth-diarize` | `diarize/` | `mouth-engine` `coremltools` `scipy` | — |
+| `mouth-cli` | `app` `tui` `tune` `config` | `mouth-engine` `typer` `rich` `textual` | `mlx` → `mouth-engine[mlx]`; `diarize` → `mouth-diarize` |
+
+**A name collision worth knowing about:** the distribution `mouth-engine` contains the
+module `mouth.engine`. They are not the same scope — the distribution also carries
+`backends`, `sources`, `vad` and six more. Where this plan means the distribution it
+writes `mouth-engine` in full; a bare `engine` always means the module.
 
 Three consequences worth naming:
 
@@ -151,8 +156,8 @@ Three consequences worth naming:
 - **`rich` gets declared.** It is imported at `app.py:15` and `tui.py:16` and is not in
   `[project.dependencies]` today — it arrives transitively through `typer`. That works
   until it doesn't.
-- **`quantize.py` goes to core, not the CLI.** It is `m quantize`'s implementation, but
-  it shares the `mlx` extra with `backends.py`, and putting it in core lets that extra be
+- **`quantize.py` goes to engine, not the CLI.** It is `m quantize`'s implementation, but
+  it shares the `mlx` extra with `backends.py`, and putting it in engine lets that extra be
   declared once.
 
 ### 2.3 Decisions, with what was rejected
@@ -161,11 +166,11 @@ Three consequences worth naming:
 |---|---|---|---|
 | D1 | Keep the `mouth.*` import namespace, split via PEP 420 | Rename roots to `lt_core.*`, `lt_cli.*` | ~200 import edits across `src/` and `tests/`, every README code block, and any script anyone has written. The split is meant to add a package, not rename the project. Cost of D1: the top-level `__init__.py` must be deleted from every member, and a stale one left anywhere silently breaks the others. |
 | D2 | Three members now; `mouth-server` later | Create the server package empty in this plan | An empty package is a claim about a design that has not been made. §5 shows the seam it will attach to; that is enough to check the boundary is in the right place. |
-| D3 | Directory names match distribution names (`packages/mouth-core/`) | Short names (`packages/core/`) | `uv sync` prints distribution names. When the two diverge, output stops matching the tree. Costs a longer `uv tool install` path, once. |
+| D3 | Directory names match distribution names (`packages/mouth-engine/`) | Short names (`packages/engine/`) | `uv sync` prints distribution names. When the two diverge, output stops matching the tree. Costs a longer `uv tool install` path, once. |
 | D4 | One `tests/` at the repo root | Per-package `tests/`, run with `uv run --package X pytest` | The suite is 2,050 lines, offline, and cross-cutting — `test_core.py` alone touches `config`, `backends`, `formats`, `recorder`, `vad`, `paths` and `tune`. The root venv holds every member, so the suite runs unchanged. |
-| D5 | `config.py` stays whole, in the CLI | Split its file-reading half into core | `default_map`, `EXCLUDED`, `reaches` and `template` are all Click-shaped. The server will be launched *by* the CLI (`m serve`), so it receives a built `Config` rather than reading the file itself. Revisit if that stops being true. |
+| D5 | `config.py` stays whole, in the CLI | Split its file-reading half into engine | `default_map`, `EXCLUDED`, `reaches` and `template` are all Click-shaped. The server will be launched *by* the CLI (`m serve`), so it receives a built `Config` rather than reading the file itself. Revisit if that stops being true. |
 | D6 | Lint and type configuration stays in the root `pyproject.toml` | Per-member tool config | Verified: `ty` reports a cross-package type error with both files named, and `ruff` honours `"**/app.py"` per-file-ignores from the root. One config, four commands, unchanged. |
-| D7 | `formats.write_outputs` and `speaker_md` take **already-labelled** words; the `from .diarize import label_words` at `formats.py:88,164` goes away | Move `Turn` and `label_words` into core; or put `formats.py` in the diarize package | This is the only `core → diarize` import in the tree and the call graph shows the primary command path hits it (research §1.3). It is also nearly dead already: in the traced run `write_outputs`' own call site did **not** fire, because `_align_blocks` had labelled every word — which the comment at `formats.py:168` says it relies on. Making pre-labelling the contract deletes the fallback rather than relocating it. `formats` keeps reading `Turn.start/.end/.speaker/.duration` duck-typed, which needs no import and is fine. |
+| D7 | `formats.write_outputs` and `speaker_md` take **already-labelled** words; the `from .diarize import label_words` at `formats.py:88,164` goes away | Move `Turn` and `label_words` into `mouth-engine`; or put `formats.py` in the diarize package | This is the only `engine → diarize` import in the tree and the primary command path hits it (research §1.3). **Its liveness is backend-dependent, and that is the part worth getting right.** On mlx, `write_outputs`' own `label_words` site never fires — `_align_blocks` has pre-labelled every word, which is what the comment at `formats.py:168` relies on. On torch it fires once and is the *only* thing labelling words at all, because `TorchBackend` does not satisfy `Aligning` and there is no per-block pass. So D7 is not a tidy-up: it moves a real responsibility from `formats` to the caller, and slice 4 has to give the non-aligning path somewhere to do it. `formats` keeps reading `Turn.start/.end/.speaker/.duration` duck-typed, which needs no import. |
 | D8 | Declare the `hooks` contract as `engine.SessionHooks`, a `typing.Protocol` | Leave it as the docstring at `engine.py:322-330` | It carries 1,083 of 1,135 cross-seam calls and has three implementations, none of which any checker can verify against it. A fourth is the entire point of this refactor. Same shape as `Backend`, `Biasable` and `Aligning`, which the codebase already expresses this way and which `56002b1` chose deliberately over flags. |
 
 ### 2.4 Configuration that has to move
@@ -200,7 +205,7 @@ Three consequences worth naming:
 -   config.py  tune.py  tui.py  app.py
 -   diarize/{__init__,coreml,offline}.py
 + packages/
-+   mouth-core/
++   mouth-engine/
 +     pyproject.toml
 +     src/mouth/         # PEP 420 -- no __init__.py here
 +       paths.py  vad.py  audio.py  formats.py  recorder.py
@@ -232,7 +237,7 @@ and D7. No behaviour changes: the CLI supplies callbacks that do exactly what th
 deletes a fallback the traced run showed does not fire.
 
 ```python
-# mouth/engine.py        (core)      <- app.py:197-267
+# mouth/engine.py        (mouth-engine)      <- app.py:197-267
 
 class InvalidConfig(ValueError):
     """A session parameter that cannot be honoured. Message is user-facing."""
@@ -249,7 +254,7 @@ def build_config(
 ```
 
 ```python
-# mouth/diarize/timing.py    (diarize)    <- app.py:1064-1094
+# mouth/diarize/timing.py    (mouth-diarize)    <- app.py:1064-1094
 
 def align_by_speaker(
     backend: Aligning,
@@ -261,11 +266,11 @@ def align_by_speaker(
 ) -> list[dict]: ...
 ```
 
-Lives in `diarize`, not core, because it needs `diarize.speaker_blocks`. That is the
+Lives in `diarize`, not engine, because it needs `diarize.speaker_blocks`. That is the
 right home anyway: it is the speaker half of `m transcribe --speakers`.
 
 ```python
-# mouth/diarize/run.py       (diarize)    <- app.py:1095-1127
+# mouth/diarize/run.py       (mouth-diarize)    <- app.py:1095-1127
 
 def diarize_audio(
     audio: np.ndarray, *, num_speakers: int | None = None, on_status=None
@@ -279,7 +284,7 @@ def speaker_holds(turns, duration: float) -> list[tuple[int, float, float]]: ...
 ```
 
 ```python
-# mouth/engine.py        (core)      <- D8, the docstring at engine.py:322
+# mouth/engine.py        (mouth-engine)      <- D8, the docstring at engine.py:322
 
 @runtime_checkable
 class SessionHooks(Protocol):
@@ -304,7 +309,7 @@ class SessionHooks(Protocol):
 ```
 
 ```python
-# mouth/formats.py       (core)      <- D7
+# mouth/formats.py       (mouth-engine)      <- D7
 
 def write_outputs(
     out_dir: Path, segments, words, stem=None, turns=None
@@ -324,10 +329,10 @@ all seven outputs written; `x N` is the measured call count.
   app.transcribe()                                                 [cli]
 - ├── app._config()                          raises typer.BadParameter
 + ├── app._config()                          catches InvalidConfig -> BadParameter
-+ │   └── engine.build_config()              core; no typer
++ │   └── engine.build_config()              engine; no typer
 - ├── app._diarize_audio(audio, n)           console.status x2, console.print xN
 - │   ├── diarize.offline.OfflineDiarizer.__init__()    x1
-- │   │   └── app._diarize_audio.<lambda>    x2   <-- core calling back into cli
+- │   │   └── app._diarize_audio.<lambda>    x2   <-- engine calling back into cli
 - │   ├── diarize.offline.OfflineDiarizer.diarize()     x1
 - │   └── <genexpr> -> diarize.Turn.duration            x13
 + ├── app._diarize(audio, n)                 console.status + console.print only
@@ -351,7 +356,7 @@ all seven outputs written; `x N` is the measured call count.
 + │       └── backend.align()                           x9
   └── app._report() -> formats.write_outputs()          x1
       ├── formats.rttm() -> diarize.Turn.duration       x13   (duck-typed, stays)
--     └── formats.speaker_md() -> diarize.label_words() x1    <-- core -> diarize IMPORT
+-     └── formats.speaker_md() -> diarize.label_words() x1    <-- engine -> diarize IMPORT
 +     └── formats.speaker_md(labelled_words)            x0    D7: the import goes
 ```
 
@@ -363,23 +368,23 @@ The measured cross-package traffic, by direction:
 
 | Direction | Runtime edges | Runtime calls | Share |
 |---|---:|---:|---:|
-| `core → cli` (callbacks) | 8 | 1,083 | 95.4% |
-| `cli → core` | 11 | 19 | 1.7% |
+| `engine → cli` (callbacks) | 8 | 1,083 | 95.4% |
+| `cli → engine` | 11 | 19 | 1.7% |
 | `cli → diarize` | 5 | 17 | 1.5% |
-| `core → diarize` | 2 | 14 | 1.2% |
+| `engine → diarize` | 2 | 14 | 1.2% |
 | `diarize → cli` (callback) | 1 | 2 | 0.2% |
 
 Three consequences for this plan:
 
-1. **The boundary is already a callback interface**, not a layered API. `cli → core` is
-   19 calls in a whole session — it is setup. The traffic is core calling out. That is
+1. **The boundary is already a callback interface**, not a layered API. `cli → engine` is
+   19 calls in a whole session — it is setup. The traffic is engine calling out. That is
    the shape a server wants, and it means the server is a **peer** of `app.py`, not a
    layer beneath it. D8 makes that interface checkable.
 2. **`vad.segment_utterances → hooks.level` is 1,066 calls, one per 30ms frame.** It is
    the only hot path across the seam. Nothing in this plan may put work on it — no
    marshalling, no queue, no per-frame allocation. A websocket server must decimate or
    batch on its own side of that callback.
-3. **`core → diarize` is the only wrong-direction *import*.** 14 calls, two edges, and
+3. **`engine → diarize` is the only wrong-direction *import*.** 14 calls, two edges, and
    D7 removes both.
 
 ## 4. Vertical slices
@@ -461,11 +466,11 @@ PEP 420 change lands, on the boundary with the least to go wrong.
 
 ### Slice 3 — cut the runtime out of the CLI
 
-The nine core modules move to `packages/mouth-core/`. `app.py`, `tui.py`,
+The nine engine modules move to `packages/mouth-engine/`. `app.py`, `tui.py`,
 `tune.py` and `config.py` stay. No Python edits beyond what `ruff check` demands.
 
 **Automated**
-- [ ] **The gate.** In a scratch venv with only `mouth-core` installed:
+- [ ] **The gate.** In a scratch venv with only `mouth-engine` installed:
       `import mouth.engine` succeeds; `import typer`, `import textual`,
       `import mouth.app` and `import mouth.diarize` all raise.
 - [ ] A session runs headlessly in that venv: `run_session` over a WAV source with a fake
@@ -494,11 +499,11 @@ the only one that edits Python, so it is last and separable. D7 (`formats` stops
       for `tests/fixtures/interview-excerpt.flac` — compared against the committed
       `interview-excerpt.json`, so this checks correctness, not just no-change
 - [ ] `on_error` fires and the pass continues when one block's `align()` raises
-- [ ] `grep -rn "typer\.\|console\." packages/mouth-core/src packages/mouth-diarize/src` returns nothing
-- [ ] `grep -rn "from \.diarize\|from mouth.diarize" packages/mouth-core/src` returns nothing (D7)
+- [ ] `grep -rn "typer\.\|console\." packages/mouth-engine/src packages/mouth-diarize/src` returns nothing
+- [ ] `grep -rn "from \.diarize\|from mouth.diarize" packages/mouth-engine/src` returns nothing (D7)
 - [ ] all three existing hook implementations satisfy `isinstance(hooks, SessionHooks)` (D8)
 - [ ] **the call graph is re-extracted** and diffed against the one in research §1.3:
-      `core → diarize` drops from 2 edges to 0, and the `core → cli` edges are unchanged
+      `engine → diarize` drops from 2 edges to 0, and the `engine → cli` edges are unchanged
       in count and call volume. A new edge in either direction is a finding, not a pass.
 
 **Manual**
@@ -533,7 +538,7 @@ graph LR
       sess["Session<br/><i>owns hooks, holds the queue</i>"]
     end
 
-    subgraph core["mouth-core"]
+    subgraph engine["mouth-engine"]
       ctx["Backend.context<br/><i>Biasable</i>"]
       stop["stop: threading.Event"]
       run["run_session"]
@@ -568,7 +573,7 @@ It would mean either restarting the session or making `run_session`'s loop re-re
 config each utterance. **That is a design question about the engine, not about
 websockets**, and it is the reason the server is a separate plan rather than a slice
 here. This plan's job is to make sure that when the question is answered, the answer can
-be written in `mouth-core` and consumed by a package that has never heard of
+be written in `mouth-engine` and consumed by a package that has never heard of
 `typer`.
 
 The gate in slice 3 is what proves it.
@@ -598,11 +603,11 @@ The gate in slice 3 is what proves it.
 ## Open questions for review
 
 1. **Slice 4 in or out?** Slices 1–3 are "refactor into a workspace"; slice 4 is "and
-   make the boundary mean something". Cutting it leaves three things on the floor: core
+   make the boundary mean something". Cutting it leaves three things on the floor: engine
    still cannot time words by speaker, the one wrong-direction import survives (D7), and
    the interface carrying 96% of cross-seam traffic stays a docstring (D8). It is the
    slice with all of the value and all of the risk.
-2. **`mouth-core` is a poor name for something that carries `torch` and
+2. **`mouth-engine` is a poor name for something that carries `torch` and
    `sounddevice`.** `-runtime`? `-engine`? Cheap to change now, annoying later.
 3. ~~**D3 (long directory names).**~~ Answered by the rename: the line that goes in the
    README is now `uv tool install -e './packages/mouth-cli[mlx,diarize]'`, and the reason
@@ -618,7 +623,7 @@ The gate in slice 3 is what proves it.
 | Risk | Signal it happened | Response |
 |---|---|---|
 | A stray `__init__.py` survives in one member | `mouth.__file__` is not `None`; another member's modules stop importing | Slice 2's third automated check catches it |
-| `uv tool install` from a member does not pick up sibling edits | `m` runs stale core code after an edit | Verified working (research §2.3); if it regresses, `uv tool install -e` each member |
+| `uv tool install` from a member does not pick up sibling edits | `m` runs stale engine code after an edit | Verified working (research §2.3); if it regresses, `uv tool install -e` each member |
 | One lockfile cannot satisfy `torch` + `mlx` + `coremltools` together | `uv lock` fails or downgrades something | Already the case today — one distribution, both extras. The workspace does not change the resolution, only where the requirements are written |
 | `ty` loses cross-package resolution | `ty check` reports unresolved imports between members | Verified working with the multi-root config; fallback is to drop `[tool.ty.environment] root` and resolve through the synced `.venv` |
 | Slice 4 changes a user-visible message | Manual check on `m transcribe --speakers` output | The comparison is against `118ae70` output, captured before slice 1 starts |

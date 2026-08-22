@@ -31,17 +31,17 @@ from pathlib import Path
 
 # Which distribution each top-level module is headed for. Keep in step with
 # docs/plans/2026-08-21-uv-workspace.md §2.2 -- this is what makes the seam report mean
-# anything, and a module missing here shows up as "?" rather than being silently core.
+# anything, and a module missing here shows up as "?" rather than being silently engine.
 ASSIGN = {
-    "paths": "core",
-    "vad": "core",
-    "audio": "core",
-    "formats": "core",
-    "recorder": "core",
-    "sources": "core",
-    "backends": "core",
-    "engine": "core",
-    "quantize": "core",
+    "paths": "engine",
+    "vad": "engine",
+    "audio": "engine",
+    "formats": "engine",
+    "recorder": "engine",
+    "sources": "engine",
+    "backends": "engine",
+    "engine": "engine",
+    "quantize": "engine",
     "diarize": "diarize",
     "app": "cli",
     "tui": "cli",

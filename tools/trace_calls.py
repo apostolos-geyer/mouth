@@ -2,7 +2,11 @@
 """Runtime call trace restricted to src/mouth, grouped by the proposed split.
 
     uv run python tools/trace_calls.py -- transcribe FILE --speakers --out /tmp/x
+    uv run python tools/trace_calls.py --out-json /tmp/rt.json -- transcribe FILE --speakers
     uv run python tools/trace_calls.py --pytest -- tests/ -q
+
+Options of our own (--pytest, --out-json) go BEFORE the `--`; everything after it is the
+command being traced.
 
 Catches what tools/callgraph.py cannot: dispatch through a variable. `hooks.segment()`,
 `backend.transcribe()`, `source.frames()` and `partials.text()` are the whole extension
@@ -27,15 +31,15 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 ASSIGN = {
-    "paths": "core",
-    "vad": "core",
-    "audio": "core",
-    "formats": "core",
-    "recorder": "core",
-    "sources": "core",
-    "backends": "core",
-    "engine": "core",
-    "quantize": "core",
+    "paths": "engine",
+    "vad": "engine",
+    "audio": "engine",
+    "formats": "engine",
+    "recorder": "engine",
+    "sources": "engine",
+    "backends": "engine",
+    "engine": "engine",
+    "quantize": "engine",
     "diarize": "diarize",
     "app": "cli",
     "tui": "cli",
@@ -114,6 +118,16 @@ def report():
 def main() -> int:
     args = sys.argv[1:]
     use_pytest = "--pytest" in args
+    # Read every option of our own BEFORE the `--`, and strip them: sys.argv is handed to
+    # the CLI below, so anything left in it is parsed as one of *its* arguments. An earlier
+    # version scanned the reassigned sys.argv for a *.json path, which meant the path
+    # reached `m transcribe` as a stray positional and the traced run died at argument
+    # parsing -- producing a report of four edges that looked like a finding.
+    out_json = None
+    if "--out-json" in args:
+        i = args.index("--out-json")
+        out_json = Path(args[i + 1])
+        del args[i : i + 2]
     if "--" in args:
         args = args[args.index("--") + 1 :]
     code = 0
@@ -142,9 +156,8 @@ def main() -> int:
             sys.setprofile(None)
             threading.setprofile(None)
     report()
-    out = next((a for a in sys.argv if a.endswith(".json")), None)
-    if out:
-        Path(out).write_text(
+    if out_json:
+        out_json.write_text(
             json.dumps(
                 {
                     "edges": [
