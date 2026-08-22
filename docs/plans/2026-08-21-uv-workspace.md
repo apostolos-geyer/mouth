@@ -5,7 +5,7 @@ git_commit: 118ae70be86da8bf3c8e2b541599032654c52a14
 branch: trunk
 repository: localtranscription
 topic: "Split localtranscription into a uv workspace"
-tags: [plan, packaging, uv, architecture]
+tags: [plan, packaging, uv, architecture, call-graph]
 status: awaiting review
 artifact: https://claude.ai/code/artifact/4e065d48-11ce-4d6a-a9ea-2ebf6aeaef81
 last_updated: 2026-08-21
@@ -32,21 +32,30 @@ Every uv mechanism named below was executed against uv 0.9.16 before being writt
 ### The problem
 
 A websocket front end is coming — one that streams audio and transcript in both
-directions and takes messages that change settings mid-session. It cannot be written
-against the package as it stands, for a reason that has nothing to do with websockets:
+directions and takes messages that change settings mid-session. Three things stop it
+being written against the package as it stands, and none of them is about websockets.
 
-**four contracts that a non-CLI caller needs live inside `app.py`, behind `typer` and
-`rich`.** Parameter validation and `Cadence` construction (`app.py:197-267`), the
-per-speaker word-timing pass added three commits ago (`app.py:1064-1094`), the
-diarization run and its reporting (`app.py:1095-1127`), and the backend-load error
-conversion (`app.py:268-297`). A second front end either imports `typer` to get at them
-or reimplements them. The TUI already shows what that costs: it is the third anonymous
-`Hooks` class in the tree.
+**The interface it would implement is a docstring.** `run_session` drives the entire
+session by calling back into a `hooks` object: six methods, specified in prose at
+`engine.py:322-330`, implemented three times as anonymous classes inside typer commands.
+A traced `lt transcribe --speakers` puts **1,083 of 1,135 cross-package calls** through
+it (research §1.3) — more than every other cross-module edge in the program combined.
+Nothing type-checks it, and a fourth implementation is the entire point of this refactor.
 
-The dependency weight is not the problem — `typer` and `textual` are small, and the
-heavy things (`torch`, `mlx`, `coremltools`) are already extras. The problem is that
-there is no boundary an import can fail to cross, so nothing stops the next contract
-from landing in `app.py` too.
+**Four contracts it needs are welded to `typer` and `rich`.** Parameter validation and
+the `Cadence` rule (`app.py:197-267`), the per-speaker word-timing pass from `9d8fbf5`
+(`app.py:1064-1094`), the diarization run and its reporting (`app.py:1095-1127`), and the
+backend-load error conversion (`app.py:268-297`). A second front end either imports
+`typer` to reach them or reimplements them.
+
+**And one module already sits on the wrong side.** `formats.py` belongs in core and
+imports `diarize` from inside two function bodies — invisible in the import graph,
+exercised on the primary command path (§D7).
+
+The dependency weight is not the problem: `typer` and `textual` are small, and the heavy
+things (`torch`, `mlx`, `coremltools`) are already extras. The problem is that **there is
+no boundary an import can fail to cross**, so nothing stops the next contract from
+landing in `app.py` too — and nothing caught the one that already went the other way.
 
 ### What success looks like
 
@@ -61,7 +70,8 @@ Read after shipping, in this order:
 3. `uv tool install -e './packages/localtranscription-cli[mlx,diarize]'` gives a live
    `lt`, with edits to **core** picked up without a reinstall — verified behaviour, not a
    hope (research §2.3).
-4. The four checks in README §Checks are still clean and still one command each.
+4. The four checks in README §Checks are still clean and still one command each. (One
+   of them was not, at the base commit — see §4.)
 5. Re-running the call-graph extraction after slice 4 shows **zero `core → diarize`
    import edges** and the same `core → cli` call edges as today, now going through a
    declared protocol instead of a docstring.
@@ -69,9 +79,10 @@ Read after shipping, in this order:
 ### Scope
 
 This is the "large" shape: product review, architecture, program design and slices, all
-below. It earns that because it moves every file in `src/` and rewrites the build,
-lint and type configuration. The design space, however, is narrow — the decisions in §2.3
-are the whole of it.
+below. It earns that because it moves every file in `src/` and rewrites the build, lint
+and type configuration. The design space is still narrow — the eight decisions in §2.3
+are the whole of it — but note that two of them, D7 and D8, exist only because the call
+graph was extracted. They were invisible to the reading that produced D1–D6.
 
 ---
 
@@ -469,7 +480,7 @@ The nine core modules move to `packages/localtranscription-core/`. `app.py`, `tu
 - [ ] `--backend mlx` after `uv sync --extra mlx`
 - [ ] `lt quantize` builds a checkpoint and `lt models` lists it
 
-### Slice 4 — move the four contracts out of `app.py`
+### Slice 4 — move the contracts out, and declare the seam
 
 The five signatures in §3.2, and the call stack in §3.3. `app.py` keeps thin wrappers
 that catch and print. This is the slice that makes the boundary worth having; it is also
@@ -586,13 +597,18 @@ The gate in slice 3 is what proves it.
 
 ## Open questions for review
 
-1. **Slice 4 in or out?** Slices 1–3 are "refactor into a workspace". Slice 4 is "and
-   make the boundary mean something". Cutting it leaves a workspace whose core cannot
-   time words by speaker — which is most of what a server would want.
+1. **Slice 4 in or out?** Slices 1–3 are "refactor into a workspace"; slice 4 is "and
+   make the boundary mean something". Cutting it leaves three things on the floor: core
+   still cannot time words by speaker, the one wrong-direction import survives (D7), and
+   the interface carrying 96% of cross-seam traffic stays a docstring (D8). It is the
+   slice with all of the value and all of the risk.
 2. **`localtranscription-core` is a poor name for something that carries `torch` and
    `sounddevice`.** `-runtime`? `-engine`? Cheap to change now, annoying later.
 3. **D3 (long directory names).** `uv tool install -e './packages/localtranscription-cli[mlx,diarize]'`
    is the line that goes in the README. Acceptable?
+4. **`tools/` is new, and is a claim about how this repo works.** Two extractors, ~330
+   lines, no tests of their own — and the only thing making slice 4's last gate runnable.
+   Keep them, or run them once, record the numbers in the research doc, and delete them?
 
 ---
 

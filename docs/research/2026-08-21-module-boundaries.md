@@ -4,33 +4,39 @@ researcher: apostolos-geyer (with Claude Opus 5)
 git_commit: 118ae70be86da8bf3c8e2b541599032654c52a14
 branch: trunk
 repository: localtranscription
-topic: "Module boundaries as they exist today, and what uv workspaces actually do"
-tags: [research, packaging, uv, architecture, boundaries]
+topic: "What calls what at 118ae70, and what uv workspaces actually do"
+tags: [research, packaging, uv, architecture, boundaries, call-graph]
 status: complete
 artifact: https://claude.ai/code/artifact/1abe7dc6-b567-4228-89db-337258a49fd8
 last_updated: 2026-08-21
 ---
 
-# Module boundaries, and what uv workspaces actually do
+# What calls what at `118ae70`, and what uv workspaces actually do
 
-This document describes the codebase **as it exists at `118ae70`** and records the
-result of six executed tests against `uv 0.9.16`, plus a call graph extracted two ways.
-It proposes nothing. Decisions and the migration sequence live in
+This document describes the codebase **as it exists at `118ae70`**. It proposes nothing;
+decisions and the migration sequence live in
 [`docs/plans/2026-08-21-uv-workspace.md`](../plans/2026-08-21-uv-workspace.md).
 
-Two sections, and they were produced by different methods:
+Three kinds of evidence, and the difference between them is load-bearing:
 
-- **§1 Codebase** — mostly read from the tree; every line reference is to a file at
-  `118ae70`. §1.3 is the exception and is measured: a static call graph over the AST, and
-  a runtime trace of one real `lt transcribe --speakers` run.
-- **§2 uv** — executed. Each finding is a throwaway workspace built, synced and run.
-  Nothing in §2 is quoted from documentation; the documentation is cited only where it
-  agrees or is silent.
+- **Read from the tree** — §1.1, §1.2, §1.4–§1.8. Every line reference is to a file at
+  `118ae70` and will drift.
+- **Measured** — §1.3. A static call graph over the AST that counts what it cannot
+  resolve, and a runtime profile of one real `lt transcribe --speakers`. Both extractors
+  are committed at [`tools/`](../../tools/), so every number below is re-runnable.
+- **Executed** — §2. Six throwaway uv workspaces, built, synced and run. Nothing in §2 is
+  quoted from documentation; the docs are cited only where they agree or are silent.
 
-> **Revision, 2026-08-21.** The first version of this document had no call graph, and its
-> import inventory was built with a grep that could not see function-scope imports. Both
-> are fixed here, and the fix changed a conclusion: `formats.py` is not a leaf, and the
-> heaviest boundary traffic runs from core *into* the CLI, not out of it.
+**Read §1.3 first if you read only one section.** It is the only part that answers the
+question the split turns on. §1.1 and §1.2 now carry the `formats → diarize` edge and the
+lazy-import column, but only because §1.3 found them: a module-scope import graph shows
+neither, and that is the point of having both.
+
+> **Revision, 2026-08-21.** The first version of this document had no call graph at all,
+> and built its import inventory with a grep anchored at column 0 — so every
+> function-scope import was invisible to it. Both are fixed here, and the fix cost two
+> conclusions: `formats.py` is not a leaf, and the heaviest boundary traffic runs from
+> core *into* the CLI rather than out of it.
 
 ---
 
@@ -176,14 +182,14 @@ because the suite's `hooks` implementations live in the tests rather than in `sr
 
 Grouping modules by the split proposed in the plan (`core` / `diarize` / `cli`):
 
-| | Static edges | Runtime edges | Runtime calls |
-|---|---:|---:|---:|
-| `cli → core` | 50 | 11 | 19 |
-| `cli → diarize` | 8 | 5 | 17 |
-| **`core → cli`** | **0** | **8** | **1,083** |
-| `diarize → cli` | 0 | 1 | 2 |
-| `core → diarize` | 2 | 2 | 14 |
-| intra-package | 173 | 83 | — |
+| Direction | Static edges | Runtime edges | Runtime calls | Share |
+|---|---:|---:|---:|---:|
+| **`core → cli`** (callbacks) | **0** | **8** | **1,083** | **95.4%** |
+| `cli → core` | 50 | 11 | 19 | 1.7% |
+| `cli → diarize` | 8 | 5 | 17 | 1.5% |
+| `core → diarize` | 2 | 2 | 14 | 1.2% |
+| `diarize → cli` (callback) | 0 | 1 | 2 | 0.2% |
+| intra-package | 173 | 83 | — | — |
 
 **96% of cross-boundary call volume runs from core back into the CLI.** Every one of
 those edges is a callback the front end supplied — six `hooks` methods and two
@@ -276,6 +282,9 @@ Each of these four is reachable only by importing `localtranscription.app`, whic
 imports `typer` and `rich` at module scope.
 
 ### 1.5 The `hooks` protocol — the existing extension point
+
+This is the interface §1.3 measured at 1,083 of 1,135 cross-package calls. What follows
+is what it is, not what it costs.
 
 `engine.run_session(cfg, hooks, backend=None, stop=None, source=None)`
 (`engine.py:319-403`) is the session driver. Its docstring states the duck-typed
