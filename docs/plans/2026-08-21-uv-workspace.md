@@ -3,8 +3,8 @@ date: 2026-08-21
 author: apostolos-geyer (with Claude Opus 5)
 git_commit: 118ae70be86da8bf3c8e2b541599032654c52a14
 branch: trunk
-repository: localtranscription
-topic: "Split localtranscription into a uv workspace"
+repository: mouth
+topic: "Split mouth into a uv workspace"
 tags: [plan, packaging, uv, architecture, call-graph]
 status: awaiting review
 artifact: https://claude.ai/code/artifact/4e065d48-11ce-4d6a-a9ea-2ebf6aeaef81
@@ -12,7 +12,7 @@ last_updated: 2026-08-21
 research: docs/research/2026-08-21-module-boundaries.md
 ---
 
-# Split `localtranscription` into a uv workspace
+# Split `mouth` into a uv workspace
 
 Research this rests on: [`docs/research/2026-08-21-module-boundaries.md`](../research/2026-08-21-module-boundaries.md).
 Every uv mechanism named below was executed against uv 0.9.16 before being written down;
@@ -61,13 +61,13 @@ landing in `app.py` too — and nothing caught the one that already went the oth
 
 Read after shipping, in this order:
 
-1. A virtualenv with only `localtranscription-core` installed can run a session end to
+1. A virtualenv with only `mouth-core` installed can run a session end to
    end. `import typer` fails in it. This is a test, not a convention —
    research §2.4 shows the namespace does not paper over a missing member.
 2. `lt transcribe FILE --speakers` produces its seven output files with the same content
    as at `118ae70`, and the code that times words by speaker block is reachable without
    importing anything that draws to a terminal.
-3. `uv tool install -e './packages/localtranscription-cli[mlx,diarize]'` gives a live
+3. `uv tool install -e './packages/mouth-cli[mlx,diarize]'` gives a live
    `lt`, with edits to **core** picked up without a reinstall — verified behaviour, not a
    hope (research §2.3).
 4. The four checks in README §Checks are still clean and still one command each. (One
@@ -95,19 +95,19 @@ graph was extracted. They were invisible to the reading that produced D1–D6.
 graph TD
     root["<b>workspace root</b><br/><i>package = false · one uv.lock</i>"]
 
-    subgraph cliPkg["localtranscription-cli"]
+    subgraph cliPkg["mouth-cli"]
       app["app.py · tui.py<br/>tune.py · config.py"]
     end
 
-    subgraph diaPkg["localtranscription-diarize"]
+    subgraph diaPkg["mouth-diarize"]
       dia["diarize/<br/>__init__ · coreml · offline<br/><b>+ run.py · timing.py</b>"]
     end
 
-    subgraph corePkg["localtranscription-core"]
+    subgraph corePkg["mouth-core"]
       core["engine · backends · sources · vad<br/>recorder · audio · formats<br/>paths · quantize"]
     end
 
-    future["localtranscription-server<br/><i>not in this plan</i>"]
+    future["mouth-server<br/><i>not in this plan</i>"]
 
     root -->|"members = packages/*"| cliPkg
     root -->|"members"| diaPkg
@@ -123,29 +123,29 @@ graph TD
     class future ghost;
 ```
 
-*All three ship into `localtranscription.*`. Thin arrows are imports and are the
+*All three ship into `mouth.*`. Thin arrows are imports and are the
 enforceable part: an install that omits a member makes its modules unimportable, which is
 what turns "core must not import typer" into a failing test. **The thick arrow is calls,
 and it points the other way** — measured, not assumed (research §1.3). Core never imports
 the CLI; it calls back through callables the front end handed it. That is why a websocket
 server can be a peer of `app.py` rather than a layer under it.*
 
-Import paths do not change. `from localtranscription.engine import run_session` resolves
-the same before and after, because `localtranscription/` becomes a PEP 420 implicit
+Import paths do not change. `from mouth.engine import run_session` resolves
+the same before and after, because `mouth/` becomes a PEP 420 implicit
 namespace shared by all three distributions (research §2.2).
 
 ### 2.2 What each member owns
 
 | Distribution | Modules | Runtime dependencies | Extras |
 |---|---|---|---|
-| `localtranscription-core` | `paths` `vad` `audio` `formats` `recorder` `sources` `backends` `engine` `quantize` | `numpy` `torch` `qwen-asr` `sounddevice` `soundfile` | `mlx` → `mlx-qwen3-asr` |
-| `localtranscription-diarize` | `diarize/` | `localtranscription-core` `coremltools` `scipy` | — |
-| `localtranscription-cli` | `app` `tui` `tune` `config` | `localtranscription-core` `typer` `rich` `textual` | `mlx` → `core[mlx]`; `diarize` → `localtranscription-diarize` |
+| `mouth-core` | `paths` `vad` `audio` `formats` `recorder` `sources` `backends` `engine` `quantize` | `numpy` `torch` `qwen-asr` `sounddevice` `soundfile` | `mlx` → `mlx-qwen3-asr` |
+| `mouth-diarize` | `diarize/` | `mouth-core` `coremltools` `scipy` | — |
+| `mouth-cli` | `app` `tui` `tune` `config` | `mouth-core` `typer` `rich` `textual` | `mlx` → `core[mlx]`; `diarize` → `mouth-diarize` |
 
 Three consequences worth naming:
 
 - **`coremltools` and `scipy` stop being extras and become plain dependencies of
-  `localtranscription-diarize`.** Installing that distribution *is* the opt-in. The
+  `mouth-diarize`.** Installing that distribution *is* the opt-in. The
   `diarize` extra survives at the CLI level and now gates a whole package rather than
   two libraries, so `lt transcribe --speakers` fails the same way it does today.
 - **`rich` gets declared.** It is imported at `app.py:15` and `tui.py:16` and is not in
@@ -159,9 +159,9 @@ Three consequences worth naming:
 
 | # | Decision | Rejected alternative | Why |
 |---|---|---|---|
-| D1 | Keep the `localtranscription.*` import namespace, split via PEP 420 | Rename roots to `lt_core.*`, `lt_cli.*` | ~200 import edits across `src/` and `tests/`, every README code block, and any script anyone has written. The split is meant to add a package, not rename the project. Cost of D1: the top-level `__init__.py` must be deleted from every member, and a stale one left anywhere silently breaks the others. |
-| D2 | Three members now; `localtranscription-server` later | Create the server package empty in this plan | An empty package is a claim about a design that has not been made. §5 shows the seam it will attach to; that is enough to check the boundary is in the right place. |
-| D3 | Directory names match distribution names (`packages/localtranscription-core/`) | Short names (`packages/core/`) | `uv sync` prints distribution names. When the two diverge, output stops matching the tree. Costs a longer `uv tool install` path, once. |
+| D1 | Keep the `mouth.*` import namespace, split via PEP 420 | Rename roots to `lt_core.*`, `lt_cli.*` | ~200 import edits across `src/` and `tests/`, every README code block, and any script anyone has written. The split is meant to add a package, not rename the project. Cost of D1: the top-level `__init__.py` must be deleted from every member, and a stale one left anywhere silently breaks the others. |
+| D2 | Three members now; `mouth-server` later | Create the server package empty in this plan | An empty package is a claim about a design that has not been made. §5 shows the seam it will attach to; that is enough to check the boundary is in the right place. |
+| D3 | Directory names match distribution names (`packages/mouth-core/`) | Short names (`packages/core/`) | `uv sync` prints distribution names. When the two diverge, output stops matching the tree. Costs a longer `uv tool install` path, once. |
 | D4 | One `tests/` at the repo root | Per-package `tests/`, run with `uv run --package X pytest` | The suite is 2,050 lines, offline, and cross-cutting — `test_core.py` alone touches `config`, `backends`, `formats`, `recorder`, `vad`, `paths` and `tune`. The root venv holds every member, so the suite runs unchanged. |
 | D5 | `config.py` stays whole, in the CLI | Split its file-reading half into core | `default_map`, `EXCLUDED`, `reaches` and `template` are all Click-shaped. The server will be launched *by* the CLI (`lt serve`), so it receives a built `Config` rather than reading the file itself. Revisit if that stops being true. |
 | D6 | Lint and type configuration stays in the root `pyproject.toml` | Per-member tool config | Verified: `ty` reports a cross-package type error with both files named, and `ruff` honours `"**/app.py"` per-file-ignores from the root. One config, four commands, unchanged. |
@@ -170,7 +170,7 @@ Three consequences worth naming:
 
 ### 2.4 Configuration that has to move
 
-- `[tool.hatch.build.targets.wheel] packages = ["src/localtranscription"]` — repeated
+- `[tool.hatch.build.targets.wheel] packages = ["src/mouth"]` — repeated
   verbatim in each member's own `pyproject.toml`.
 - `[tool.ruff] src` — from `["src", "tests"]` to the three member `src` directories plus
   `tests`.
@@ -179,11 +179,11 @@ Three consequences worth naming:
   without a second edit.
 - `[tool.ty.src] include` and `[tool.ty.environment] root` — the three member `src`
   directories.
-- `[project.scripts]` (`localtranscription`, `lt`) — to `localtranscription-cli`.
-- `__version__ = "0.3.0"` at `src/localtranscription/__init__.py:3` — deleted with the
+- `[project.scripts]` (`mouth`, `lt`) — to `mouth-cli`.
+- `__version__ = "0.3.0"` at `src/mouth/__init__.py:3` — deleted with the
   file. Nothing reads it (research §1.6). Each member carries its own `version` in
   `pyproject.toml`, all starting at `0.4.0`. If `lt --version` is ever wanted:
-  `importlib.metadata.version("localtranscription-cli")`.
+  `importlib.metadata.version("mouth-cli")`.
 
 ---
 
@@ -192,30 +192,30 @@ Three consequences worth naming:
 ### 3.1 File tree, before → after
 
 ```diff
-  localtranscription/
-- src/localtranscription/
+  mouth/
+- src/mouth/
 -   __init__.py                       # __version__, read by nothing
 -   paths.py  vad.py  audio.py  formats.py  recorder.py
 -   sources.py  backends.py  engine.py  quantize.py
 -   config.py  tune.py  tui.py  app.py
 -   diarize/{__init__,coreml,offline}.py
 + packages/
-+   localtranscription-core/
++   mouth-core/
 +     pyproject.toml
-+     src/localtranscription/         # PEP 420 -- no __init__.py here
++     src/mouth/         # PEP 420 -- no __init__.py here
 +       paths.py  vad.py  audio.py  formats.py  recorder.py
 +       sources.py  backends.py  engine.py  quantize.py
-+   localtranscription-diarize/
++   mouth-diarize/
 +     pyproject.toml
-+     src/localtranscription/         # PEP 420 -- no __init__.py here
++     src/mouth/         # PEP 420 -- no __init__.py here
 +       diarize/
 +         __init__.py                 # keeps its own; it has 159 lines of content
 +         coreml.py  offline.py
 +         run.py                      # NEW  <- app.py:1095-1127
 +         timing.py                   # NEW  <- app.py:1064-1094
-+   localtranscription-cli/
++   mouth-cli/
 +     pyproject.toml
-+     src/localtranscription/         # PEP 420 -- no __init__.py here
++     src/mouth/         # PEP 420 -- no __init__.py here
 +       app.py  tui.py  tune.py  config.py
   tests/                              # unchanged, still at the root
   pocs/                               # unchanged, frozen PEP 723 scripts
@@ -232,7 +232,7 @@ and D7. No behaviour changes: the CLI supplies callbacks that do exactly what th
 deletes a fallback the traced run showed does not fire.
 
 ```python
-# localtranscription/engine.py        (core)      <- app.py:197-267
+# mouth/engine.py        (core)      <- app.py:197-267
 
 class InvalidConfig(ValueError):
     """A session parameter that cannot be honoured. Message is user-facing."""
@@ -249,7 +249,7 @@ def build_config(
 ```
 
 ```python
-# localtranscription/diarize/timing.py    (diarize)    <- app.py:1064-1094
+# mouth/diarize/timing.py    (diarize)    <- app.py:1064-1094
 
 def align_by_speaker(
     backend: Aligning,
@@ -265,7 +265,7 @@ Lives in `diarize`, not core, because it needs `diarize.speaker_blocks`. That is
 right home anyway: it is the speaker half of `lt transcribe --speakers`.
 
 ```python
-# localtranscription/diarize/run.py       (diarize)    <- app.py:1095-1127
+# mouth/diarize/run.py       (diarize)    <- app.py:1095-1127
 
 def diarize_audio(
     audio: np.ndarray, *, num_speakers: int | None = None, on_status=None
@@ -279,7 +279,7 @@ def speaker_holds(turns, duration: float) -> list[tuple[int, float, float]]: ...
 ```
 
 ```python
-# localtranscription/engine.py        (core)      <- D8, the docstring at engine.py:322
+# mouth/engine.py        (core)      <- D8, the docstring at engine.py:322
 
 @runtime_checkable
 class SessionHooks(Protocol):
@@ -304,7 +304,7 @@ class SessionHooks(Protocol):
 ```
 
 ```python
-# localtranscription/formats.py       (core)      <- D7
+# mouth/formats.py       (core)      <- D7
 
 def write_outputs(
     out_dir: Path, segments, words, stem=None, turns=None
@@ -405,13 +405,13 @@ baseline is restored first and separately.
 Slices 3 and 4 add a fifth, which is the point of the exercise:
 
 ```sh
-uv run python tools/callgraph.py packages/*/src/localtranscription   # import-level seam
+uv run python tools/callgraph.py packages/*/src/mouth   # import-level seam
 uv run python tools/trace_calls.py -- transcribe FILE --speakers     # call-level seam
 ```
 
 ### Slice 1 — the workspace exists, nothing else changes
 
-`git mv src/ packages/localtranscription/src/`. Root `pyproject.toml` becomes virtual
+`git mv src/ packages/mouth/src/`. Root `pyproject.toml` becomes virtual
 (`[tool.uv] package = false`, `[tool.uv.workspace] members = ["packages/*"]`,
 `[tool.uv.sources]`), keeping `[tool.ruff]`, `[tool.ty.*]` and `[dependency-groups]`.
 The member keeps the current `[project]` block verbatim, name and all. **No Python file
@@ -427,7 +427,7 @@ is drawn.
       the source-path change)
 
 **Manual**
-- [ ] `uv tool install -e './packages/localtranscription[mlx,diarize]' --force`, then `lt`
+- [ ] `uv tool install -e './packages/mouth[mlx,diarize]' --force`, then `lt`
       from an unrelated directory
 - [ ] `lt tui` against the mic: partials render, `k` opens the context field, editing it
       changes the next utterance
@@ -438,20 +438,20 @@ is drawn.
 The easiest seam: `diarize/` has no internal imports (research §1.1). This is where the
 PEP 420 change lands, on the boundary with the least to go wrong.
 
-- New member `packages/localtranscription-diarize/`, `git mv` of `diarize/`.
-- Delete `src/localtranscription/__init__.py` from **both** members. This is D1's cost,
+- New member `packages/mouth-diarize/`, `git mv` of `diarize/`.
+- Delete `src/mouth/__init__.py` from **both** members. This is D1's cost,
   paid here.
-- The remaining member is renamed `localtranscription-cli` and grows
-  `diarize = ["localtranscription-diarize"]` as an extra; `coremltools` and `scipy` move
+- The remaining member is renamed `mouth-cli` and grows
+  `diarize = ["mouth-diarize"]` as an extra; `coremltools` and `scipy` move
   to the new member's plain dependencies.
 
 **Automated**
 - [ ] `uv run pytest tests/test_diarize.py -q` passes unchanged
-- [ ] `uv pip install --python <scratch venv> -e ./packages/localtranscription-diarize`,
-      then `import localtranscription.diarize` succeeds and `import localtranscription.app`
+- [ ] `uv pip install --python <scratch venv> -e ./packages/mouth-diarize`,
+      then `import mouth.diarize` succeeds and `import mouth.app`
       raises `ModuleNotFoundError`
-- [ ] `python -c "import localtranscription"` does **not** find a stray `__init__.py`
-      (`localtranscription.__file__ is None`)
+- [ ] `python -c "import mouth"` does **not** find a stray `__init__.py`
+      (`mouth.__file__ is None`)
 
 **Manual**
 - [ ] `lt diarize tests/fixtures/interview-excerpt.flac` prints the same speakers and
@@ -461,13 +461,13 @@ PEP 420 change lands, on the boundary with the least to go wrong.
 
 ### Slice 3 — cut the runtime out of the CLI
 
-The nine core modules move to `packages/localtranscription-core/`. `app.py`, `tui.py`,
+The nine core modules move to `packages/mouth-core/`. `app.py`, `tui.py`,
 `tune.py` and `config.py` stay. No Python edits beyond what `ruff check` demands.
 
 **Automated**
-- [ ] **The gate.** In a scratch venv with only `localtranscription-core` installed:
-      `import localtranscription.engine` succeeds; `import typer`, `import textual`,
-      `import localtranscription.app` and `import localtranscription.diarize` all raise.
+- [ ] **The gate.** In a scratch venv with only `mouth-core` installed:
+      `import mouth.engine` succeeds; `import typer`, `import textual`,
+      `import mouth.app` and `import mouth.diarize` all raise.
 - [ ] A session runs headlessly in that venv: `run_session` over a WAV source with a fake
       `Backend`, asserting segments come out. Added as `tests/test_workspace_gate.py`, and
       skipped when the scratch venv is absent so the suite stays offline.
@@ -494,8 +494,8 @@ the only one that edits Python, so it is last and separable. D7 (`formats` stops
       for `tests/fixtures/interview-excerpt.flac` — compared against the committed
       `interview-excerpt.json`, so this checks correctness, not just no-change
 - [ ] `on_error` fires and the pass continues when one block's `align()` raises
-- [ ] `grep -rn "typer\.\|console\." packages/localtranscription-core/src packages/localtranscription-diarize/src` returns nothing
-- [ ] `grep -rn "from \.diarize\|from localtranscription.diarize" packages/localtranscription-core/src` returns nothing (D7)
+- [ ] `grep -rn "typer\.\|console\." packages/mouth-core/src packages/mouth-diarize/src` returns nothing
+- [ ] `grep -rn "from \.diarize\|from mouth.diarize" packages/mouth-core/src` returns nothing (D7)
 - [ ] all three existing hook implementations satisfy `isinstance(hooks, SessionHooks)` (D8)
 - [ ] **the call graph is re-extracted** and diffed against the one in research §1.3:
       `core → diarize` drops from 2 edges to 0, and the `core → cli` edges are unchanged
@@ -529,11 +529,11 @@ protocol: **exactly two things in a session are mutable today.**
 graph LR
     client["client<br/><i>browser · hotkey · editor</i>"]
 
-    subgraph server["localtranscription-server &nbsp;(not in this plan)"]
+    subgraph server["mouth-server &nbsp;(not in this plan)"]
       sess["Session<br/><i>owns hooks, holds the queue</i>"]
     end
 
-    subgraph core["localtranscription-core"]
+    subgraph core["mouth-core"]
       ctx["Backend.context<br/><i>Biasable</i>"]
       stop["stop: threading.Event"]
       run["run_session"]
@@ -568,7 +568,7 @@ It would mean either restarting the session or making `run_session`'s loop re-re
 config each utterance. **That is a design question about the engine, not about
 websockets**, and it is the reason the server is a separate plan rather than a slice
 here. This plan's job is to make sure that when the question is answered, the answer can
-be written in `localtranscription-core` and consumed by a package that has never heard of
+be written in `mouth-core` and consumed by a package that has never heard of
 `typer`.
 
 The gate in slice 3 is what proves it.
@@ -577,11 +577,11 @@ The gate in slice 3 is what proves it.
 
 ## What we're NOT doing
 
-- **No websocket server, no message protocol, no `localtranscription-server` package.**
+- **No websocket server, no message protocol, no `mouth-server` package.**
   §5 checks the seam; it does not build on it.
 - **No new runtime-mutable settings.** `Backend.context` and `stop` stay the only two.
   Making `language` or `cadence` changeable mid-session is engine work with its own plan.
-- **No import-root rename.** `localtranscription.*` throughout (D1).
+- **No import-root rename.** `mouth.*` throughout (D1).
 - **No splitting of `backends.py`.** The `Backend` protocol and its two implementations
   stay in one module and one distribution. Separating them needs a plugin registry to
   replace `BACKENDS = {"torch": ..., "mlx": ...}`, and nothing has asked for a third
@@ -602,10 +602,11 @@ The gate in slice 3 is what proves it.
    still cannot time words by speaker, the one wrong-direction import survives (D7), and
    the interface carrying 96% of cross-seam traffic stays a docstring (D8). It is the
    slice with all of the value and all of the risk.
-2. **`localtranscription-core` is a poor name for something that carries `torch` and
+2. **`mouth-core` is a poor name for something that carries `torch` and
    `sounddevice`.** `-runtime`? `-engine`? Cheap to change now, annoying later.
-3. **D3 (long directory names).** `uv tool install -e './packages/localtranscription-cli[mlx,diarize]'`
-   is the line that goes in the README. Acceptable?
+3. ~~**D3 (long directory names).**~~ Answered by the rename: the line that goes in the
+   README is now `uv tool install -e './packages/mouth-cli[mlx,diarize]'`, and the reason
+   to hesitate is gone.
 4. **`tools/` is new, and is a claim about how this repo works.** Two extractors, ~330
    lines, no tests of their own — and the only thing making slice 4's last gate runnable.
    Keep them, or run them once, record the numbers in the research doc, and delete them?
@@ -616,7 +617,7 @@ The gate in slice 3 is what proves it.
 
 | Risk | Signal it happened | Response |
 |---|---|---|
-| A stray `__init__.py` survives in one member | `localtranscription.__file__` is not `None`; another member's modules stop importing | Slice 2's third automated check catches it |
+| A stray `__init__.py` survives in one member | `mouth.__file__` is not `None`; another member's modules stop importing | Slice 2's third automated check catches it |
 | `uv tool install` from a member does not pick up sibling edits | `lt` runs stale core code after an edit | Verified working (research §2.3); if it regresses, `uv tool install -e` each member |
 | One lockfile cannot satisfy `torch` + `mlx` + `coremltools` together | `uv lock` fails or downgrades something | Already the case today — one distribution, both extras. The workspace does not change the resolution, only where the requirements are written |
 | `ty` loses cross-package resolution | `ty check` reports unresolved imports between members | Verified working with the multi-root config; fallback is to drop `[tool.ty.environment] root` and resolve through the synced `.venv` |

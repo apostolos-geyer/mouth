@@ -294,7 +294,7 @@ def render(
 ) -> str:
     """The config file this tuning run implies, as text to show before it is written."""
     lines = [
-        "# localtranscription -- written by `lt tune`.",
+        "# mouth -- written by `lt tune`.",
     ]
     if note:
         lines += [f"# {line}" for line in note.splitlines()]

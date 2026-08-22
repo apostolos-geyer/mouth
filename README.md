@@ -1,4 +1,4 @@
-# localtranscription
+# mouth
 
 Live local transcription with Qwen3-ASR + Qwen3-ForcedAligner, running on MPS.
 
@@ -15,7 +15,7 @@ uv tool update-shell                   # once, if uv's bin dir isn't on your PAT
 `-e` links the install to `src/` instead of copying it, so edits are live and there's no
 reinstall step at all. Drop it for a snapshot — but then `--force` is *not* enough to
 update one. uv caches the built wheel for a local path, so a rebuild needs
-`--refresh-package localtranscription`, and without it the install silently stays behind.
+`--refresh-package mouth`, and without it the install silently stays behind.
 
 That failure is worth recognising, because it doesn't look like a stale binary: an old
 `lt` paired with a current config file rejects its own config.
@@ -34,7 +34,7 @@ Or run it out of the repo without installing anything:
 
 ```sh
 uv sync
-uv run lt tui          # or: uv run localtranscription tui
+uv run lt tui          # or: uv run mouth tui
 ```
 
 ## Commands
@@ -233,7 +233,7 @@ lt config --edit          # open it in $EDITOR
 ```
 
 ```toml
-# ~/.config/localtranscription/config.toml
+# ~/.config/mouth/config.toml
 
 backend = "mlx"
 model = "qwen3-asr-1.7b-q8g64"
@@ -295,7 +295,7 @@ One TOML rule worth knowing, since it bites here: bare keys must come **before**
 ## Layout
 
 ```
-src/localtranscription/
+src/mouth/
   paths.py       XDG config/data/cache locations
   config.py      the config file, layered under the flags
   vad.py         VAD + Cadence (when partials fire)
@@ -558,7 +558,7 @@ Two things get startup there in the first place, and the second is the bigger on
   each utterance) because there wasn't much load left to save.
 - **A remembered threshold.** Calibrating the room costs a full second — *more than loading
   a quantised model does*, which would make it the reason dictation felt slow. It's cached
-  per input device in `$XDG_CACHE_HOME/localtranscription/calibration.json` and reused;
+  per input device in `$XDG_CACHE_HOME/mouth/calibration.json` and reused;
   `--recalibrate` retakes it, `--threshold` skips it. Keyed per device because a laptop mic
   and a desk condenser don't share one, and never written from `--wav`, whose room is a file.
 
@@ -577,10 +577,10 @@ lt paths                  # show them, and which flag overrides each
 
 | | default | override |
 |---|---|---|
-| config | `$XDG_CONFIG_HOME/localtranscription/config.toml` | `--config` |
-| transcripts | `$XDG_DATA_HOME/localtranscription/out` | `--out` |
-| recordings | `$XDG_DATA_HOME/localtranscription/recordings` | `--record-dir` |
-| checkpoints | `$XDG_CACHE_HOME/localtranscription/models` | `--model` |
+| config | `$XDG_CONFIG_HOME/mouth/config.toml` | `--config` |
+| transcripts | `$XDG_DATA_HOME/mouth/out` | `--out` |
+| recordings | `$XDG_DATA_HOME/mouth/recordings` | `--record-dir` |
+| checkpoints | `$XDG_CACHE_HOME/mouth/models` | `--model` |
 
 Falling back to `~/.config`, `~/.local/share` and `~/.cache`. Checkpoints live under the **cache**
 because `lt quantize` rebuilds any of them from upstream weights — losing that directory

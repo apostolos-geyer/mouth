@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runtime call trace restricted to src/localtranscription, grouped by the proposed split.
+"""Runtime call trace restricted to src/mouth, grouped by the proposed split.
 
     uv run python tools/trace_calls.py -- transcribe FILE --speakers --out /tmp/x
     uv run python tools/trace_calls.py --pytest -- tests/ -q
@@ -43,7 +43,7 @@ ASSIGN = {
     "config": "cli",
 }
 
-SRC = Path("src/localtranscription").resolve()
+SRC = Path("src/mouth").resolve()
 edges: Counter[tuple[str, str]] = Counter()
 stacks: dict[int, list[str | None]] = {}
 
@@ -129,7 +129,7 @@ def main() -> int:
             threading.setprofile(None)
     else:
         # app() and not main(): main() ends in os._exit and would skip the report.
-        from localtranscription.app import app
+        from mouth.app import app
 
         sys.argv = ["lt", *args]
         sys.setprofile(profiler)

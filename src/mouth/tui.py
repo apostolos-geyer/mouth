@@ -268,7 +268,7 @@ def build_tui(cfg, backend):
                 self.context.value = backend.context
             self.hud.border_title = "input"
             self.transcript.border_title = "transcript"
-            self.title = "localtranscription"
+            self.title = "mouth"
             self.set_interval(1 / 15, self.tick)
             self.run_worker(self.pipeline, thread=True)
 

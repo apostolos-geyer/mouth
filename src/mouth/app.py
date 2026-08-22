@@ -1,4 +1,4 @@
-"""Typer entrypoint: `localtranscription` / `lt`."""
+"""Typer entrypoint: `mouth` / `lt`."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ CONFIG = typer.Option(
     "--config",
     envvar="LT_CONFIG",
     metavar="PATH",
-    help="Config file to read [dim](default ~/.config/localtranscription/config.toml)[/].",
+    help="Config file to read [dim](default ~/.config/mouth/config.toml)[/].",
 )
 
 

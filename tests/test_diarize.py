@@ -14,8 +14,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from localtranscription.diarize import Turn, label_words, merge_turns
-from localtranscription.diarize.offline import (
+from mouth.diarize import Turn, label_words, merge_turns
+from mouth.diarize.offline import (
     MIN_CORE_EMBEDDINGS,
     OfflineConfig,
     _reliable,
@@ -23,7 +23,7 @@ from localtranscription.diarize.offline import (
     cosine_condensed,
     powerset,
 )
-from localtranscription.formats import rttm
+from mouth.formats import rttm
 
 FIXTURES = Path(__file__).parent / "fixtures"
 EXCERPT = FIXTURES / "interview-excerpt.flac"
@@ -39,7 +39,7 @@ def test_diarizer_protocol_is_duck_typed():
     isinstance, not issubclass: Diarizer carries data members (name, detail), and
     runtime_checkable only supports issubclass for method-only protocols.
     """
-    from localtranscription.diarize import Diarizer
+    from mouth.diarize import Diarizer
 
     class Fake:
         name, detail = "fake", "fake"
@@ -52,7 +52,7 @@ def test_diarizer_protocol_is_duck_typed():
 
 def test_offline_diarizer_exposes_the_protocol_surface():
     """Checked without loading any weights, so it runs everywhere."""
-    from localtranscription.diarize.offline import OfflineDiarizer
+    from mouth.diarize.offline import OfflineDiarizer
 
     assert OfflineDiarizer.name == "offline"
     assert callable(OfflineDiarizer.diarize)
@@ -62,7 +62,7 @@ def test_class_table_matches_the_powerset():
     """The decode gather table must agree with the class list it replaced."""
     import numpy as np
 
-    from localtranscription.diarize.offline import _CLASS_TABLE, powerset
+    from mouth.diarize.offline import _CLASS_TABLE, powerset
 
     classes = powerset()
     assert _CLASS_TABLE.shape == (len(classes), 3)
@@ -241,8 +241,8 @@ def test_rttm_writes_duration_not_offset():
 
 def _diarizer():
     pytest.importorskip("coremltools")
-    from localtranscription.diarize.coreml import DIARIZATION_REPO, fetch
-    from localtranscription.diarize.offline import OfflineDiarizer
+    from mouth.diarize.coreml import DIARIZATION_REPO, fetch
+    from mouth.diarize.offline import OfflineDiarizer
 
     try:  # cached weights only -- the suite shouldn't depend on the network
         import os
@@ -258,7 +258,7 @@ def _diarizer():
 def excerpt_turns():
     # audio.load, not soundfile directly: this is the decode path `lt diarize` uses, so
     # the end-to-end test exercises it rather than a parallel one that could rot.
-    from localtranscription.audio import SAMPLE_RATE, load
+    from mouth.audio import SAMPLE_RATE, load
 
     return _diarizer().diarize(load(EXCERPT), SAMPLE_RATE), json.loads(TRUTH.read_text())
 
@@ -292,7 +292,7 @@ def test_excerpt_attributes_every_labelled_turn_correctly(excerpt_turns):
 
 
 def _turn(start, end, speaker):
-    from localtranscription.diarize.offline import Turn
+    from mouth.diarize.offline import Turn
 
     return Turn(start, end, speaker)
 
@@ -308,7 +308,7 @@ def test_speaker_transcript_keeps_the_sentence_intact():
     The word list carries no punctuation, so a transcript rebuilt from it reads "Not not
     super at at liberty" where the model wrote "Not, not super at at liberty."
     """
-    from localtranscription.formats import speaker_md
+    from mouth.formats import speaker_md
 
     md = speaker_md(
         [(0.0, "Not, not super at at liberty.")],
@@ -323,7 +323,7 @@ def test_speaker_transcript_groups_a_run_rather_than_fragmenting_it():
     """Attribution is per utterance, so a function word landing in a gap between turns
     cannot break a paragraph into one block per word -- which is what per-word grouping
     did: one clause became eight blocks, three of them the single word "it"."""
-    from localtranscription.formats import speaker_md
+    from mouth.formats import speaker_md
 
     md = speaker_md(
         [(0.0, "One."), (1.0, "Two."), (2.0, "Three.")],
@@ -336,7 +336,7 @@ def test_speaker_transcript_groups_a_run_rather_than_fragmenting_it():
 
 
 def test_a_mixed_utterance_goes_to_whoever_holds_most_of_it():
-    from localtranscription.formats import speaker_md
+    from mouth.formats import speaker_md
 
     md = speaker_md(
         [(0.0, "Mostly mine but you got a word in.")],
@@ -348,7 +348,7 @@ def test_a_mixed_utterance_goes_to_whoever_holds_most_of_it():
 
 def test_an_utterance_nobody_claims_says_so():
     """Silence between speakers is a real answer; guessing invents an attribution."""
-    from localtranscription.formats import speaker_md
+    from mouth.formats import speaker_md
 
     md = speaker_md(
         [(0.0, "Who said this?")], _words([("Who", 0.0)]), [_turn(9.0, 10.0, 0)]
@@ -360,7 +360,7 @@ def test_an_utterance_nobody_claims_says_so():
 
 
 def test_blocks_join_one_voice_and_split_on_the_other():
-    from localtranscription.diarize import speaker_blocks
+    from mouth.diarize import speaker_blocks
 
     blocks = speaker_blocks(
         [(0.0, "Hi."), (2.0, "Still me."), (4.0, "Now me.")],
@@ -376,7 +376,7 @@ def test_blocks_join_one_voice_and_split_on_the_other():
 
 def test_a_block_nobody_claims_stays_its_own():
     """Silence between speakers is a real answer here too."""
-    from localtranscription.diarize import speaker_blocks
+    from mouth.diarize import speaker_blocks
 
     blocks = speaker_blocks(
         [(0.0, "Mine."), (2.0, "Nobody's."), (4.0, "Mine again.")],
@@ -387,7 +387,7 @@ def test_a_block_nobody_claims_stays_its_own():
 
 
 def test_blocks_of_nothing():
-    from localtranscription.diarize import speaker_blocks
+    from mouth.diarize import speaker_blocks
 
     assert speaker_blocks([], [_turn(0, 1, 0)], 1.0) == []
     assert [b[0] for b in speaker_blocks([(0.0, "Hi.")], [], 1.0)] == [None]
@@ -399,7 +399,7 @@ def test_standalone_alignment_is_a_capability_not_a_requirement():
     Kept off Backend, like the other three: a backend that only transcribes is still a
     backend, and every fake in these tests is one.
     """
-    from localtranscription.backends import Aligning, Backend
+    from mouth.backends import Aligning, Backend
 
     class Plain:
         name = detail = "plain"

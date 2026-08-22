@@ -11,11 +11,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from localtranscription import config as cfgfile
-from localtranscription.backends import Backend, Transcription, Word
-from localtranscription.formats import write_outputs
-from localtranscription.recorder import SessionRecorder, load_manifest
-from localtranscription.vad import FRAME_LEN, SAMPLE_RATE, Cadence, segment_utterances
+from mouth import config as cfgfile
+from mouth.backends import Backend, Transcription, Word
+from mouth.formats import write_outputs
+from mouth.recorder import SessionRecorder, load_manifest
+from mouth.vad import FRAME_LEN, SAMPLE_RATE, Cadence, segment_utterances
 
 rng = np.random.default_rng(0)
 
@@ -268,8 +268,8 @@ class SlowBackend:
 
 def test_close_without_drain_drops_partials_but_keeps_finals():
     """Quitting must not sit through a backlog -- but must not lose utterances either."""
-    from localtranscription.engine import Transcriber
-    from localtranscription.vad import Chunk
+    from mouth.engine import Transcriber
+    from mouth.vad import Chunk
 
     w = Transcriber(SlowBackend(delay=0.0), "English")
     a = np.zeros(1600, dtype=np.float32)
@@ -290,8 +290,8 @@ def test_close_gives_up_on_wedged_inference():
     """A stuck inference must not hold the process open."""
     import time as _t
 
-    from localtranscription.engine import Transcriber
-    from localtranscription.vad import Chunk
+    from mouth.engine import Transcriber
+    from mouth.vad import Chunk
 
     w = Transcriber(SlowBackend(delay=30.0), "English")
     w.start()
@@ -312,8 +312,8 @@ def test_close_gives_up_on_wedged_inference():
 
 def test_pending_interims_freed_when_final_has_no_text(tmp_path):
     """An utterance that transcribes to nothing must not strand its partials."""
-    from localtranscription.engine import Transcriber
-    from localtranscription.vad import Chunk
+    from mouth.engine import Transcriber
+    from mouth.vad import Chunk
 
     class EmptyFinal:
         name, detail = "fake", "fake"
@@ -331,8 +331,8 @@ def test_pending_interims_freed_when_final_has_no_text(tmp_path):
 
 
 def test_pending_interims_freed_when_final_raises(tmp_path):
-    from localtranscription.engine import Transcriber
-    from localtranscription.vad import Chunk
+    from mouth.engine import Transcriber
+    from mouth.vad import Chunk
 
     class Boom:
         name, detail = "fake", "fake"
@@ -380,8 +380,8 @@ def test_tui_transcript_widget_tree_is_bounded():
     """
     import asyncio
 
-    from localtranscription.engine import Config, Segment
-    from localtranscription.tui import build_tui
+    from mouth.engine import Config, Segment
+    from mouth.tui import build_tui
 
     app = build_tui(Config(record=False), object())
     app.pipeline = lambda: None  # no capture: this is about the widget tree alone
@@ -418,7 +418,7 @@ def test_ctrl_c_during_model_load_exits_immediately(tmp_path):
         textwrap.dedent(f"""
         import concurrent.futures, sys, time
         sys.path.insert(0, {str(Path(__file__).parent.parent / "src")!r})
-        import localtranscription.app as m
+        import mouth.app as m
 
         ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         ex.submit(time.sleep, 120)      # the wedged non-daemon worker
@@ -455,7 +455,7 @@ def test_ctrl_c_during_model_load_exits_immediately(tmp_path):
 
 def test_registered_backends_satisfy_the_protocol():
     """Every backend must structurally match Backend without being imported/loaded."""
-    from localtranscription.backends import BACKENDS
+    from mouth.backends import BACKENDS
 
     for name, cls in BACKENDS.items():
         assert hasattr(cls, "transcribe"), name
@@ -472,8 +472,8 @@ def test_fake_backend_is_a_backend():
 
 def test_engine_offsets_words_from_backend_onto_session_clock():
     """Word times come back relative to the chunk; the engine re-bases them."""
-    from localtranscription.engine import Transcriber
-    from localtranscription.vad import Chunk
+    from mouth.engine import Transcriber
+    from mouth.vad import Chunk
 
     class Two:
         name, detail = "fake", "fake"
@@ -490,7 +490,7 @@ def test_engine_offsets_words_from_backend_onto_session_clock():
 
 
 def test_unknown_backend_is_rejected_with_a_useful_message():
-    from localtranscription.backends import BackendUnavailable, load_backend
+    from mouth.backends import BackendUnavailable, load_backend
 
     try:
         load_backend("tensorflow")
@@ -502,7 +502,7 @@ def test_unknown_backend_is_rejected_with_a_useful_message():
 
 def test_missing_mlx_dependency_explains_the_fix():
     """The mlx package isn't installed here; the failure must be actionable."""
-    from localtranscription.backends import BackendUnavailable, MlxBackend, available
+    from mouth.backends import BackendUnavailable, MlxBackend, available
 
     if available("mlx"):
         pytest.skip("mlx-qwen3-asr is installed")
@@ -524,7 +524,7 @@ def test_mlx_adapter_passes_dtype_and_aligner_in_the_shapes_the_library_wants(mo
     import mlx.core as mx  # ty: ignore[unresolved-import]
     import mlx_qwen3_asr as m
 
-    from localtranscription.backends import MlxBackend
+    from mouth.backends import MlxBackend
 
     seen = {}
 
@@ -598,7 +598,7 @@ def test_mlx_quantize_supports_the_modes_we_offer():
 
     from mlx import nn
 
-    from localtranscription.quantize import MODES
+    from mouth.quantize import MODES
 
     assert "mode" in inspect.signature(nn.quantize).parameters, (
         "mlx.nn.quantize lost its `mode` parameter; `lt quantize --mode` and "
@@ -613,23 +613,23 @@ def test_mlx_quantize_supports_the_modes_we_offer():
 
 
 def test_paths_default_under_xdg(monkeypatch, tmp_path):
-    from localtranscription import paths
+    from mouth import paths
 
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    assert paths.out_dir() == tmp_path / ".local/share/localtranscription/out"
-    assert paths.record_dir() == tmp_path / ".local/share/localtranscription/recordings"
-    assert paths.models_dir() == tmp_path / ".cache/localtranscription/models"
+    assert paths.out_dir() == tmp_path / ".local/share/mouth/out"
+    assert paths.record_dir() == tmp_path / ".local/share/mouth/recordings"
+    assert paths.models_dir() == tmp_path / ".cache/mouth/models"
 
 
 def test_paths_honour_xdg_env(monkeypatch, tmp_path):
-    from localtranscription import paths
+    from mouth import paths
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "d"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "c"))
-    assert paths.out_dir() == tmp_path / "d/localtranscription/out"
-    assert paths.models_dir() == tmp_path / "c/localtranscription/models"
+    assert paths.out_dir() == tmp_path / "d/mouth/out"
+    assert paths.models_dir() == tmp_path / "c/mouth/models"
 
 
 def test_paths_ignore_relative_xdg_values(monkeypatch, tmp_path):
@@ -638,24 +638,24 @@ def test_paths_ignore_relative_xdg_values(monkeypatch, tmp_path):
     Honouring one would put user data wherever the process happened to be started, which
     is the failure this module exists to prevent.
     """
-    from localtranscription import paths
+    from mouth import paths
 
     monkeypatch.setenv("XDG_DATA_HOME", "relative/path")
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    assert paths.out_dir() == tmp_path / ".local/share/localtranscription/out"
+    assert paths.out_dir() == tmp_path / ".local/share/mouth/out"
 
 
 def test_paths_ignore_empty_xdg_values(monkeypatch, tmp_path):
-    from localtranscription import paths
+    from mouth import paths
 
     monkeypatch.setenv("XDG_CACHE_HOME", "")
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    assert paths.models_dir() == tmp_path / ".cache/localtranscription/models"
+    assert paths.models_dir() == tmp_path / ".cache/mouth/models"
 
 
 def test_config_defaults_are_not_relative(monkeypatch, tmp_path):
     """A default Config must never write into the working directory."""
-    from localtranscription.engine import Config
+    from mouth.engine import Config
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     cfg = Config()
@@ -665,7 +665,7 @@ def test_config_defaults_are_not_relative(monkeypatch, tmp_path):
 
 def test_config_defaults_are_independent_instances(monkeypatch, tmp_path):
     """default_factory, not a shared mutable default."""
-    from localtranscription.engine import Config
+    from mouth.engine import Config
 
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert Config().out_dir == Config().out_dir
@@ -682,10 +682,10 @@ def _make_checkpoint(root: Path, name: str) -> Path:
 
 
 def test_bare_name_resolves_against_the_checkpoint_dir(monkeypatch, tmp_path):
-    from localtranscription.backends import resolve_checkpoint
+    from mouth.backends import resolve_checkpoint
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    models = tmp_path / "localtranscription" / "models"
+    models = tmp_path / "mouth" / "models"
     _make_checkpoint(models, "qwen3-asr-1.7b-q8g64")
     assert resolve_checkpoint("qwen3-asr-1.7b-q8g64") == str(
         models / "qwen3-asr-1.7b-q8g64"
@@ -698,10 +698,10 @@ def test_stale_models_prefix_still_resolves(monkeypatch, tmp_path):
     Regression: it used to fall through to the Hub and fail as `401 Unauthorized` for a
     repo that never existed.
     """
-    from localtranscription.backends import resolve_checkpoint
+    from mouth.backends import resolve_checkpoint
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    models = tmp_path / "localtranscription" / "models"
+    models = tmp_path / "mouth" / "models"
     _make_checkpoint(models, "qwen3-asr-1.7b-q8g64")
     assert resolve_checkpoint("models/qwen3-asr-1.7b-q8g64") == str(
         models / "qwen3-asr-1.7b-q8g64"
@@ -709,7 +709,7 @@ def test_stale_models_prefix_still_resolves(monkeypatch, tmp_path):
 
 
 def test_existing_path_wins(monkeypatch, tmp_path):
-    from localtranscription.backends import resolve_checkpoint
+    from mouth.backends import resolve_checkpoint
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     here = _make_checkpoint(tmp_path / "elsewhere", "mine")
@@ -717,7 +717,7 @@ def test_existing_path_wins(monkeypatch, tmp_path):
 
 
 def test_hf_repo_ids_pass_through(monkeypatch, tmp_path):
-    from localtranscription.backends import resolve_checkpoint
+    from mouth.backends import resolve_checkpoint
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     for repo in ("Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ForcedAligner-0.6B"):
@@ -726,10 +726,10 @@ def test_hf_repo_ids_pass_through(monkeypatch, tmp_path):
 
 def test_missing_local_ref_fails_here_not_at_the_hub(monkeypatch, tmp_path):
     """A name meant as a path must not be reported as a missing repository."""
-    from localtranscription.backends import BackendUnavailable, resolve_checkpoint
+    from mouth.backends import BackendUnavailable, resolve_checkpoint
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    models = tmp_path / "localtranscription" / "models"
+    models = tmp_path / "mouth" / "models"
     _make_checkpoint(models, "real-one")
     for ref in ("models/nope", "./nope", "some/deep/path"):
         with pytest.raises(BackendUnavailable) as exc:
@@ -738,7 +738,7 @@ def test_missing_local_ref_fails_here_not_at_the_hub(monkeypatch, tmp_path):
 
 
 def test_missing_checkpoint_dir_is_not_a_crash(monkeypatch, tmp_path):
-    from localtranscription.backends import BackendUnavailable, resolve_checkpoint
+    from mouth.backends import BackendUnavailable, resolve_checkpoint
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "absent"))
     with pytest.raises(BackendUnavailable) as exc:
@@ -750,7 +750,7 @@ def test_missing_checkpoint_dir_is_not_a_crash(monkeypatch, tmp_path):
 
 
 def _speech_frames(voiced_frames: int, tail: int = 40):
-    from localtranscription.vad import FRAME_LEN
+    from mouth.vad import FRAME_LEN
 
     loud = np.full(FRAME_LEN, 0.5, dtype=np.float32)
     quiet = np.zeros(FRAME_LEN, dtype=np.float32)
@@ -759,7 +759,7 @@ def _speech_frames(voiced_frames: int, tail: int = 40):
 
 def test_incremental_partials_do_not_resend_the_prefix():
     """The whole point: partial audio should sum to the utterance, not to n^2/2c."""
-    from localtranscription.vad import SAMPLE_RATE, Cadence, segment_utterances
+    from mouth.vad import SAMPLE_RATE, Cadence, segment_utterances
 
     frames = _speech_frames(400)
     whole = list(segment_utterances(iter(frames), 0.1, cadence=Cadence()))
@@ -776,7 +776,7 @@ def test_incremental_partials_do_not_resend_the_prefix():
 
 
 def test_incremental_partials_are_flagged():
-    from localtranscription.vad import Cadence, segment_utterances
+    from mouth.vad import Cadence, segment_utterances
 
     chunks = list(
         segment_utterances(
@@ -789,7 +789,7 @@ def test_incremental_partials_are_flagged():
 
 def test_final_chunk_still_carries_the_whole_utterance():
     """Finals run the aligner and get saved, so they must never be a delta."""
-    from localtranscription.vad import Cadence, segment_utterances
+    from mouth.vad import Cadence, segment_utterances
 
     whole = [
         c
@@ -847,8 +847,8 @@ class _FakeStream:
 
 def test_stream_is_reset_between_utterances():
     """A new utterance must not inherit the previous one's decoder state."""
-    from localtranscription.engine import Transcriber
-    from localtranscription.vad import Chunk
+    from mouth.engine import Transcriber
+    from mouth.vad import Chunk
 
     stream = _FakeStream()
     worker = Transcriber(_FakeBackend(), "English", partials=stream)
@@ -858,8 +858,8 @@ def test_stream_is_reset_between_utterances():
 
 
 def test_final_closes_the_stream_even_when_it_yields_nothing():
-    from localtranscription.engine import Transcriber
-    from localtranscription.vad import Chunk
+    from mouth.engine import Transcriber
+    from mouth.vad import Chunk
 
     stream = _FakeStream()
     worker = Transcriber(_SilentBackend(), "English", partials=stream)
@@ -870,8 +870,8 @@ def test_final_closes_the_stream_even_when_it_yields_nothing():
 
 def test_incremental_partials_are_never_dropped_as_stale():
     """A delta the decoder hasn't seen can't be skipped -- it would hole the stream."""
-    from localtranscription.engine import Transcriber
-    from localtranscription.vad import Chunk
+    from mouth.engine import Transcriber
+    from mouth.vad import Chunk
 
     worker = Transcriber(_FakeBackend(), "English", partials=_FakeStream())
     worker.submit(Chunk(np.zeros(1600, np.float32), 0.0, False, incremental=True))
@@ -887,7 +887,7 @@ def test_incremental_partials_are_never_dropped_as_stale():
 
 def test_threshold_cache_round_trips_per_device(tmp_path):
     """A threshold describes a mic in a room; a laptop mic and a condenser don't share one."""
-    from localtranscription.sources import cached_threshold, remember_threshold
+    from mouth.sources import cached_threshold, remember_threshold
 
     cal = tmp_path / "calibration.json"
     assert cached_threshold(None, cal) is None
@@ -902,7 +902,7 @@ def test_threshold_cache_round_trips_per_device(tmp_path):
 
 def test_threshold_cache_treats_damage_as_a_miss(tmp_path):
     """A stale cache must cost a calibration, never a failed session."""
-    from localtranscription.sources import cached_threshold, remember_threshold
+    from mouth.sources import cached_threshold, remember_threshold
 
     cal = tmp_path / "calibration.json"
     for junk in ("{ not json", "[]", '{"default": {}}', '{"default": {"threshold": 0}}'):
@@ -916,8 +916,8 @@ def test_threshold_cache_treats_damage_as_a_miss(tmp_path):
 
 def test_transcriber_can_skip_the_aligner():
     """timestamps=False must reach the backend on finals, not just on partials."""
-    from localtranscription.engine import Transcriber
-    from localtranscription.vad import Chunk
+    from mouth.engine import Transcriber
+    from mouth.vad import Chunk
 
     seen = []
 
@@ -953,8 +953,8 @@ def _dictate(tmp_path, spec, *args):
         textwrap.dedent(f"""
         import sys
         sys.path.insert(0, {str(Path(__file__).parent.parent / "src")!r})
-        import localtranscription.app as m
-        from localtranscription.backends import Transcription
+        import mouth.app as m
+        from mouth.backends import Transcription
 
         class Fake:
             name = detail = "fake"
@@ -1059,7 +1059,7 @@ def _cli_params():
     """The real CLI's option table, so these tests can't drift from the real flags."""
     import typer.main
 
-    from localtranscription.app import _params, app
+    from mouth.app import _params, app
 
     return _params(typer.main.get_command(app))
 
@@ -1084,7 +1084,7 @@ def test_bare_keys_reach_every_command_with_the_option():
 
 def test_a_new_command_inherits_settings_without_being_listed():
     """The property the inversion buys, stated so it cannot quietly go away."""
-    from localtranscription import config as cfg
+    from mouth import config as cfg
 
     assert cfg.reaches("some-future-command")
     assert not cfg.reaches("diarize")
@@ -1142,7 +1142,7 @@ def test_a_missing_file_is_not_a_config(tmp_path, monkeypatch):
 def _invoke(tmp_path, text, *args):
     from typer.testing import CliRunner
 
-    from localtranscription.app import app
+    from mouth.app import app
 
     cfg = tmp_path / "config.toml"
     cfg.write_text(text)
@@ -1181,7 +1181,7 @@ def _drafter(prev, paying=True):
     The draft policy is pure sequence logic, so it tests without weights -- which matters,
     because the parts that need a model are the parts a CPU test can never reach.
     """
-    from localtranscription.backends import _MlxDraftDecoder
+    from mouth.backends import _MlxDraftDecoder
 
     d = _MlxDraftDecoder(backend=None, language="English")
     d._prev = list(prev)
@@ -1265,8 +1265,8 @@ def test_finals_never_take_the_drafted_path():
     final overwrites, not for the transcript. So the final must stay on the library's own
     path no matter what.
     """
-    from localtranscription.engine import Transcriber
-    from localtranscription.vad import Chunk
+    from mouth.engine import Transcriber
+    from mouth.vad import Chunk
 
     draft = _CountingDraft()
     segs, interims = [], []
@@ -1331,7 +1331,7 @@ def test_voiced_frames_are_not_clip_length():
     Pre-roll and the trailing tail are part of every clip and part of none of this
     measurement -- which is exactly why a length-based gate would pass a cough.
     """
-    from localtranscription import tune as tn
+    from mouth import tune as tn
 
     audio = np.concatenate(frames([(False, 0.3), (True, 0.2), (False, 0.5)]))
     voiced = tn.count_voiced(audio, 0.01)
@@ -1342,8 +1342,8 @@ def test_voiced_frames_are_not_clip_length():
 
 def test_min_speech_sits_under_your_shortest_word():
     """Tuning must never make a machine deafer to short words than an untuned one."""
-    from localtranscription import tune as tn
-    from localtranscription.vad import MIN_SPEECH_SEC
+    from mouth import tune as tn
+    from mouth.vad import MIN_SPEECH_SEC
 
     def sample(voiced_sec):
         return tn.Sample(
@@ -1361,7 +1361,7 @@ def test_min_speech_sits_under_your_shortest_word():
 
 
 def test_cost_model_separates_fixed_from_proportional():
-    from localtranscription import tune as tn
+    from mouth import tune as tn
 
     model = tn.fit([(2.0, 0.20), (4.0, 0.30), (8.0, 0.50)])  # 0.1 + 0.05x
     assert model.fixed == pytest.approx(0.1, abs=0.01)
@@ -1371,7 +1371,7 @@ def test_cost_model_separates_fixed_from_proportional():
 
 def test_cost_model_survives_a_degenerate_run():
     """One measurement should give a worse model, not a traceback."""
-    from localtranscription import tune as tn
+    from mouth import tune as tn
 
     assert tn.fit([]).at(5.0) == 0.0
     flat = tn.fit([(3.0, 0.4)])
@@ -1381,7 +1381,7 @@ def test_cost_model_survives_a_degenerate_run():
 
 
 def test_a_tighter_profile_is_fresher_and_costs_more():
-    from localtranscription import tune as tn
+    from mouth import tune as tn
 
     cheap = tn.CostModel(0.02, 0.01)
     got = [tn.evaluate(p, cheap, cheap, 20.0) for p in tn.PROFILES]
@@ -1394,7 +1394,7 @@ def test_a_tighter_profile_is_fresher_and_costs_more():
 def test_recommendation_prefers_a_profile_that_survives_losing_drafting():
     """The guard switches drafting off on unstable audio, and a profile that only fits
     with it doesn't degrade -- it stops keeping up and the text stops moving."""
-    from localtranscription import tune as tn
+    from mouth import tune as tn
 
     # Drafted cost fits everything; undrafted only fits the relaxed schedule
     # (0.30x against snappy's 0.85x and aggressive's 1.57x).
@@ -1410,7 +1410,7 @@ def test_recommendation_prefers_a_profile_that_survives_losing_drafting():
 
 def test_recommendation_never_returns_nothing():
     """A machine that cannot keep up with any profile still needs an answer."""
-    from localtranscription import tune as tn
+    from mouth import tune as tn
 
     hopeless = tn.CostModel(5.0, 5.0)
     got = tn.recommend([tn.evaluate(p, hopeless, hopeless, 20.0) for p in tn.PROFILES])
@@ -1421,7 +1421,7 @@ def test_tuned_config_is_valid_and_says_what_it_set():
     """`lt tune --write` writes something `lt config` can read back."""
     import tomllib
 
-    from localtranscription import tune as tn
+    from mouth import tune as tn
 
     text = tn.render(
         backend="mlx",
@@ -1446,7 +1446,7 @@ def test_tuned_config_is_valid_and_says_what_it_set():
 
 
 def test_bench_lengths_span_the_schedule():
-    from localtranscription import tune as tn
+    from mouth import tune as tn
 
     got = tn.bench_lengths(30.0)
     assert got[0] < 1.0 and got[-1] == 30.0
@@ -1460,7 +1460,7 @@ def test_profile_descriptions_claim_nothing_about_this_machine():
     An earlier version said "needs drafting to be affordable at all" in the text of the
     option itself, which hard-coded one machine's answer into every machine's menu.
     """
-    from localtranscription import tune as tn
+    from mouth import tune as tn
 
     banned = ("draft", "machine", "afford", "keep up", "cheap", "fast", "slow")
     for p in tn.PROFILES:
@@ -1470,7 +1470,7 @@ def test_profile_descriptions_claim_nothing_about_this_machine():
 
 
 def test_effort_is_described_in_words():
-    from localtranscription import tune as tn
+    from mouth import tune as tn
 
     cheap, dear = tn.CostModel(0.001, 0.0005), tn.CostModel(2.0, 2.0)
     assert tn.evaluate(tn.PROFILES[0], cheap, cheap, 20.0).headroom == "easy"
@@ -1484,7 +1484,7 @@ def test_a_capability_cannot_be_claimed_without_the_method():
     method, or grow the method and forget it, and either way the failure lands mid-session
     as an AttributeError. Matching on the method itself cannot come apart.
     """
-    from localtranscription.backends import (
+    from mouth.backends import (
         Backend,
         Drafting,
         Streaming,
@@ -1515,9 +1515,9 @@ def test_context_is_a_capability_and_the_tui_can_edit_it():
     Off the Backend protocol, which is one method wide and which every fake in this file
     implements without knowing anything about context.
     """
-    from localtranscription.backends import Backend, Biasable
-    from localtranscription.engine import Config
-    from localtranscription.tui import build_tui
+    from mouth.backends import Backend, Biasable
+    from mouth.engine import Config
+    from mouth.tui import build_tui
 
     class Plain:
         name = detail = "plain"
@@ -1554,7 +1554,7 @@ def test_a_file_is_calibrated_from_all_of_itself(tmp_path):
     """
     import soundfile as sf
 
-    from localtranscription.sources import make_source
+    from mouth.sources import make_source
 
     # Loud for a second, quiet for nine: exactly the shape that fools an opening sample.
     loud = rng.normal(0, 0.3, SAMPLE_RATE).astype(np.float32)
@@ -1574,7 +1574,7 @@ def test_the_threshold_formula_still_agrees_with_the_microphone():
     Only which percentile counts as the floor differs, so speech-over-silence -- what a
     microphone actually hears -- lands in the same place either way.
     """
-    from localtranscription.sources import ambient_threshold
+    from mouth.sources import ambient_threshold
 
     # Mostly silence with occasional speech, i.e. a room with someone in it.
     levels = np.concatenate([np.full(90, 0.002), np.full(10, 0.3)])
@@ -1584,7 +1584,7 @@ def test_the_threshold_formula_still_agrees_with_the_microphone():
 
 def test_speech_at_the_median_is_what_breaks_the_median():
     """The failure the percentile exists for, in three lines."""
-    from localtranscription.sources import ambient_threshold
+    from mouth.sources import ambient_threshold
 
     # A quarter room tone, three quarters speech -- cutting the pauses does not cut the
     # gaps between words. The real interview measured p10=0.004 against a median of 0.061.
@@ -1628,8 +1628,8 @@ def test_cuts_do_not_disturb_the_utterances_they_do_not_touch():
 def test_only_a_change_of_speaker_is_a_cut():
     """A diarizer emits several turns for one person talking through their own pauses.
     Cutting on those would chop a sentence for nothing."""
-    from localtranscription.diarize import speaker_changes
-    from localtranscription.diarize.offline import Turn
+    from mouth.diarize import speaker_changes
+    from mouth.diarize.offline import Turn
 
     turns = [Turn(0, 1, 0), Turn(1, 2, 0), Turn(2, 3, 1), Turn(3, 4, 0)]
     assert speaker_changes(turns) == (2.0, 3.0)

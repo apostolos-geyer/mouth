@@ -8,10 +8,10 @@ macOS's own convention is `~/Library/Application Support`, but XDG is what's ask
 here and the env vars are honoured either way, so `XDG_DATA_HOME=~/Library/...` gets that
 behaviour without a code change.
 
-    config       $XDG_CONFIG_HOME/localtranscription/config.toml  (~/.config/...)
-    transcripts  $XDG_DATA_HOME/localtranscription/out          (~/.local/share/...)
-    recordings   $XDG_DATA_HOME/localtranscription/recordings
-    checkpoints  $XDG_CACHE_HOME/localtranscription/models      (~/.cache/...)
+    config       $XDG_CONFIG_HOME/mouth/config.toml   (~/.config/...)
+    transcripts  $XDG_DATA_HOME/mouth/out             (~/.local/share/...)
+    recordings   $XDG_DATA_HOME/mouth/recordings
+    checkpoints  $XDG_CACHE_HOME/mouth/models         (~/.cache/...)
 
 Quantised checkpoints are cache, not data: they're GBs, and `lt quantize` rebuilds any of
 them from the upstream weights. Losing that directory costs time, not work.
@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-APP = "localtranscription"
+APP = "mouth"
 
 
 def _base(env: str, default: str) -> Path:

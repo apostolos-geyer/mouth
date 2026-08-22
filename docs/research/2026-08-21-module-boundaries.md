@@ -3,7 +3,7 @@ date: 2026-08-21
 researcher: apostolos-geyer (with Claude Opus 5)
 git_commit: 118ae70be86da8bf3c8e2b541599032654c52a14
 branch: trunk
-repository: localtranscription
+repository: mouth
 topic: "What calls what at 118ae70, and what uv workspaces actually do"
 tags: [research, packaging, uv, architecture, boundaries, call-graph]
 status: complete
@@ -44,10 +44,10 @@ neither, and that is the point of having both.
 
 ### 1.1 One distribution, seventeen modules, 5,512 lines
 
-`pyproject.toml` declares a single package, `localtranscription`, built by hatchling
-from `src/localtranscription`, with two optional-dependency groups (`mlx`, `diarize`)
-and two console scripts (`localtranscription`, `lt`) both pointing at
-`localtranscription.app:main`.
+`pyproject.toml` declares a single package, `mouth`, built by hatchling
+from `src/mouth`, with two optional-dependency groups (`mlx`, `diarize`)
+and two console scripts (`mouth`, `lt`) both pointing at
+`mouth.app:main`.
 
 | Module | Lines | Internal imports | Lazy internal | Third-party |
 |---|---:|---|---|---|
@@ -156,7 +156,7 @@ enclosing class and its in-package bases). A call it cannot resolve is counted, 
 guessed.
 
 ```sh
-uv run python tools/callgraph.py src/localtranscription
+uv run python tools/callgraph.py src/mouth
 # 273 defs   233 resolved call edges   1,147 unresolved call sites
 ```
 
@@ -278,7 +278,7 @@ and `OfflineDiarizer`, runs it, and prints the per-speaker hold times. Raises
 `typer.BadParameter` on `DiarizationUnavailable` and on `ValueError`, and on a live
 source (`--speakers` needs a file).
 
-Each of these four is reachable only by importing `localtranscription.app`, which
+Each of these four is reachable only by importing `mouth.app`, which
 imports `typer` and `rich` at module scope.
 
 ### 1.5 The `hooks` protocol — the existing extension point
@@ -326,27 +326,27 @@ per-process, and tied to a single utterance's lifetime.
 
 ### 1.7 What the tests import
 
-`tests/test_core.py` imports `localtranscription.{config, backends, formats, recorder,
-vad, paths, tune}`. `tests/test_diarize.py` imports `localtranscription.{diarize,
+`tests/test_core.py` imports `mouth.{config, backends, formats, recorder,
+vad, paths, tune}`. `tests/test_diarize.py` imports `mouth.{diarize,
 diarize.offline, formats}`. Neither imports `app` or `tui` at module scope;
 `test_core.py:376` builds the TUI transcript widget and `test_core.py:405` drives a
 Ctrl-C-during-load path, both via in-function imports.
 
-Nothing reads `localtranscription.__version__`; it is defined at
-`src/localtranscription/__init__.py:3` and referenced nowhere else in `src/` or
+Nothing reads `mouth.__version__`; it is defined at
+`src/mouth/__init__.py:3` and referenced nowhere else in `src/` or
 `tests/`.
 
 ### 1.8 Tooling configuration bound to the current layout
 
 - `[tool.ruff] src = ["src", "tests"]`
 - `[tool.ruff.lint.per-file-ignores]` keys four literal paths:
-  `src/localtranscription/{app,engine,sources,tui}.py`
+  `src/mouth/{app,engine,sources,tui}.py`
 - `[tool.ty.src] include = ["src", "tests"]`
 - `[tool.ty.environment] root = ["./src"]`
-- `[tool.hatch.build.targets.wheel] packages = ["src/localtranscription"]`
+- `[tool.hatch.build.targets.wheel] packages = ["src/mouth"]`
 
 README documents the install as `uv tool install -e ".[mlx,diarize]"` and warns that a
-non-editable install needs `--refresh-package localtranscription`, because uv caches the
+non-editable install needs `--refresh-package mouth`, because uv caches the
 built wheel for a local path.
 
 ---
@@ -361,7 +361,7 @@ understanding of uv, not this codebase.
 
 ```toml
 [project]
-name = "localtranscription-workspace"
+name = "mouth-workspace"
 version = "0"
 requires-python = ">=3.12"
 dependencies = ["lt-cli", "lt-diarize"]
@@ -383,19 +383,19 @@ itself is not built and does not need a `[build-system]`. Confirmed: a root with
 
 ### 2.2 One import namespace can span several distributions
 
-Three members, each shipping into `src/localtranscription/`, **with no
-`__init__.py` at the `localtranscription/` level in any of them** (PEP 420 implicit
+Three members, each shipping into `src/mouth/`, **with no
+`__init__.py` at the `mouth/` level in any of them** (PEP 420 implicit
 namespace):
 
 ```
-packages/lt-core/src/localtranscription/engine.py
-packages/lt-diarize/src/localtranscription/diarize/__init__.py
-packages/lt-cli/src/localtranscription/app.py
+packages/lt-core/src/mouth/engine.py
+packages/lt-diarize/src/mouth/diarize/__init__.py
+packages/lt-cli/src/mouth/app.py
 ```
 
-`from localtranscription.engine import ENGINE` and `from localtranscription.diarize
+`from mouth.engine import ENGINE` and `from mouth.diarize
 import TURN` both resolve from `app.py` after `uv sync`. Each member declares
-`packages = ["src/localtranscription"]` in `[tool.hatch.build.targets.wheel]` and
+`packages = ["src/mouth"]` in `[tool.hatch.build.targets.wheel]` and
 hatchling builds all three without complaint.
 
 A sub-package keeping its own `__init__.py` is fine — `diarize/__init__.py` has 159
@@ -423,9 +423,9 @@ directory; no flag is needed.
 A fresh venv with only `lt-core` installed:
 
 ```
-import localtranscription.engine      -> OK
-import localtranscription.app         -> ModuleNotFoundError: No module named 'localtranscription.app'
-import localtranscription.diarize     -> ModuleNotFoundError: No module named 'localtranscription.diarize'
+import mouth.engine      -> OK
+import mouth.app         -> ModuleNotFoundError: No module named 'mouth.app'
+import mouth.diarize     -> ModuleNotFoundError: No module named 'mouth.diarize'
 ```
 
 The namespace does not paper over a missing member. This is what makes an "a package

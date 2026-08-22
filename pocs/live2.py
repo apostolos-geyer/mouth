@@ -11,7 +11,7 @@
 #     "textual>=1.0",
 # ]
 # ///
-"""localtranscription v2 -- live mic transcription, CLI + TUI.
+"""mouth v2 -- live mic transcription, CLI + TUI.
 
 Same engine as live.py (Qwen3-ASR + Qwen3-ForcedAligner, energy VAD, worker thread);
 v2 adds a typer CLI and a Textual TUI. Self-contained on purpose so v1 stays untouched.
@@ -571,7 +571,7 @@ def build_tui(cfg: Config, model):
             yield Footer()
 
         def on_mount(self):
-            self.title = "localtranscription"
+            self.title = "mouth"
             self.sub_title = f"{cfg.language} · {cfg.device}"
             self.set_interval(1 / 15, self.refresh_bar)
             self.run_worker(self.pipeline, thread=True)

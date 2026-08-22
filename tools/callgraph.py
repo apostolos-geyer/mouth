@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Static call graph over the package, grouped by the proposed workspace split.
 
-    uv run python tools/callgraph.py src/localtranscription
+    uv run python tools/callgraph.py src/mouth
 
 Exists because an import graph does not answer the question this repo's split turns on.
 `formats.py` imports nothing internal at module scope and calls `diarize.label_words`
@@ -229,7 +229,7 @@ class Graph:
 
 
 if __name__ == "__main__":
-    g = Graph(Path(sys.argv[1] if len(sys.argv) > 1 else "src/localtranscription"))
+    g = Graph(Path(sys.argv[1] if len(sys.argv) > 1 else "src/mouth"))
     g.report()
     if len(sys.argv) > 2:
         Path(sys.argv[2]).write_text(

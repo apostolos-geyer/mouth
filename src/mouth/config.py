@@ -1,6 +1,6 @@
 """A config file, so the flags you always pass stop being flags you always pass.
 
-    ~/.config/localtranscription/config.toml     ($XDG_CONFIG_HOME honoured)
+    ~/.config/mouth/config.toml     ($XDG_CONFIG_HOME honoured)
 
 Nothing here is a new setting: every key is an existing flag, and all the file does is
 change what that flag *defaults* to. An explicit flag always wins -- not by convention
@@ -66,7 +66,7 @@ def reaches(command: str) -> bool:
 
 
 _TEMPLATE = """\
-# localtranscription -- defaults for the flags you'd otherwise type every time.
+# mouth -- defaults for the flags you'd otherwise type every time.
 # A flag on the command line still beats anything in here.
 #
 # Bare keys below reach every command that has the option. A few commands read a
