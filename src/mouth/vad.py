@@ -61,7 +61,7 @@ class Cadence:
     quadratic -- it buys freshness on long utterances by giving up the linearity. It's
     still far cheaper than a small fixed cadence, but at 30s the schedule approaches the
     model's own throughput. Per-chunk encoder caching is the real fix; until then this is
-    a latency/compute dial, and `lt cadence <seconds>` prints the cost of any setting.
+    a latency/compute dial, and `m cadence <seconds>` prints the cost of any setting.
     """
 
     first: float = 0.4  # also the floor on spacing between partials

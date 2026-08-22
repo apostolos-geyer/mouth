@@ -1,4 +1,4 @@
-"""Typer entrypoint: `mouth` / `lt`."""
+"""Typer entrypoint: `m`."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ CONFIG = typer.Option(
 def _config_path(ctx: typer.Context) -> Path:
     """The config file this invocation is about: --config if given, else the default.
 
-    Shared because `lt tune --write` grew its own copy and then ignored the flag: it read
+    Shared because `m tune --write` grew its own copy and then ignored the flag: it read
     defaults out of the file it was pointed at and wrote its result somewhere else.
     """
     explicit = ctx.obj if isinstance(ctx.obj, Path) else None
@@ -79,7 +79,7 @@ def _params(group) -> dict[str, dict[str, str]]:
     Read off the built CLI rather than listed here, so the config file is validated
     against the real options and can't drift away from them. Both spellings resolve,
     because both are things a person sees: `--record-dir` is what --help prints,
-    `record_dir` is what it's called underneath, and for `lt models` the two differ
+    `record_dir` is what it's called underneath, and for `m models` the two differ
     (`--dir` sets `model_dir`). Long options only -- `--no-record` as a key would read
     as "no_record = true means record", which is backwards.
     """
@@ -104,10 +104,10 @@ def _params(group) -> dict[str, dict[str, str]]:
 def _root(ctx: typer.Context, config: Path | None = CONFIG):
     """Live local transcription with [b]Qwen3-ASR[/b] + forced alignment."""
     # The --config path, for the commands that need to know which file was meant. Only
-    # that: `lt config` re-reads and re-parses on purpose, because it has to survive a
+    # that: `m config` re-reads and re-parses on purpose, because it has to survive a
     # file too broken for this callback to have parsed at all.
     ctx.obj = config
-    # `lt config` is how you inspect a file that may not parse, so it does its own
+    # `m config` is how you inspect a file that may not parse, so it does its own
     # loading and reports the failure instead of being taken down by it.
     if ctx.invoked_subcommand == "config":
         return
@@ -135,7 +135,7 @@ MODEL = typer.Option(
     "--model",
     "-M",
     help="ASR weights: a HF repo id or a local directory "
-    "[dim](e.g. one built by `lt quantize`)[/].",
+    "[dim](e.g. one built by `m quantize`)[/].",
 )
 ALIGNER = typer.Option(
     DEFAULT_ALIGNER,
@@ -223,9 +223,9 @@ def _config(
     dtype, partials) would swap without a TypeError.
     """
     if language not in LANGUAGES:
-        raise typer.BadParameter(f"{language!r} not supported. Try `lt languages`.")
+        raise typer.BadParameter(f"{language!r} not supported. Try `m languages`.")
     if backend not in BACKENDS:
-        raise typer.BadParameter(f"{backend!r} unknown. Try `lt backends`.")
+        raise typer.BadParameter(f"{backend!r} unknown. Try `m backends`.")
     if dtype not in ("auto", *DTYPES):
         raise typer.BadParameter(f"{dtype!r} unknown. Choose auto, {', '.join(DTYPES)}.")
     if partials not in PARTIAL_MODES:
@@ -282,7 +282,7 @@ def _load(cfg: Config, out: Console = console, on_status=None, align: bool | Non
             on_status=status,
             # No aligner load at all when nothing will ask for word timings. The override
             # is for a caller that wants the aligner without running it per utterance --
-            # `lt transcribe --speakers` times whole speaker blocks afterwards instead.
+            # `m transcribe --speakers` times whole speaker blocks afterwards instead.
             align=cfg.timestamps if align is None else align,
         )
 
@@ -365,7 +365,7 @@ def models(
     )
     if not found:
         console.print(
-            f"\n[dim]No local checkpoints in {model_dir}. Build one with `lt quantize`.[/]"
+            f"\n[dim]No local checkpoints in {model_dir}. Build one with `m quantize`.[/]"
         )
         return
     # Name the directory once rather than on every row: these paths are long, and a
@@ -425,7 +425,7 @@ def quantize(
     console.print(
         f"[green]{dest}[/]  [dim]{describe_checkpoint(str(dest))} · "
         f"{qz.size_gb(dest):.2f} GB[/]\n"
-        f"[dim]run it:[/] lt tui --backend mlx {flag} {dest}"
+        f"[dim]run it:[/] m tui --backend mlx {flag} {dest}"
     )
 
 
@@ -548,7 +548,7 @@ def paths_():
         console.print(f"    {path}", highlight=False)
     console.print(
         "\n[dim]XDG_CONFIG_HOME / XDG_DATA_HOME / XDG_CACHE_HOME move these. Checkpoints\n"
-        "live under the cache because `lt quantize` rebuilds them; transcripts and\n"
+        "live under the cache because `m quantize` rebuilds them; transcripts and\n"
         "recordings do not.[/]"
     )
 
@@ -593,7 +593,7 @@ def config_(
     if not path.is_file():
         console.print(
             f"[dim]{path}[/]\n[yellow]no config file[/] "
-            f"[dim]— `lt config --init` starts one[/]"
+            f"[dim]— `m config --init` starts one[/]"
         )
         raise typer.Exit(0 if init else 1)
 
@@ -601,8 +601,8 @@ def config_(
     try:
         defaults = cfgfile.default_map(cfgfile.read(path), _params(group))
     except cfgfile.ConfigError as e:
-        # Not BadParameter: `lt config` on a broken file should read as a report about
-        # that file, not as a misuse of `lt config`. escape() because these messages
+        # Not BadParameter: `m config` on a broken file should read as a report about
+        # that file, not as a misuse of `m config`. escape() because these messages
         # quote section names, and [dictate] is also rich markup.
         console.print(f"\n[red]{escape(str(e))}[/]")
         raise typer.Exit(1) from e
@@ -610,7 +610,7 @@ def config_(
         console.print("[dim]sets nothing — every line is commented out.[/]")
         return
     for cmd, values in sorted(defaults.items()):
-        console.print(f"\n[b]lt {cmd}[/]")
+        console.print(f"\n[b]m {cmd}[/]")
         by_name = {prm.name: prm for prm in commands[cmd].params}
         for name, value in sorted(values.items()):
             console.print(f"  [cyan]{_shown(by_name[name], value)}[/]", highlight=False)
@@ -707,7 +707,7 @@ def tune(
     if box.apple_silicon and backend != "mlx":
         console.print(
             "\n  [yellow]This Mac can run about twice as fast on a converted "
-            "model.[/]\n  [dim]See `lt quantize`.[/]"
+            "model.[/]\n  [dim]See `m quantize`.[/]"
         )
 
     # ------------------------------------------------------------------ 2. listen
@@ -797,7 +797,7 @@ def tune(
     if backup is not None:
         console.print(f"  [dim]previous settings kept at {backup.name}[/]")
     console.print(f"\n  [green]Saved.[/] [dim]{dest}[/]")
-    console.print("  [dim]Run `lt tui` to use it, or `lt config` to see it.[/]\n")
+    console.print("  [dim]Run `m tui` to use it, or `m config` to see it.[/]\n")
 
 
 def _tune_listen(wav: Path | None, mic: int | None, phrases: int):
@@ -924,7 +924,7 @@ def transcribe(
 
     With [b]--speakers[/b] it also diarizes and labels the transcript, which is the whole
     job for a recording of more than one person. Same decode, same pass over the file:
-    running `lt diarize` afterwards would re-read and re-analyse it.
+    running `m diarize` afterwards would re-read and re-analyse it.
     """
     cfg = _config(
         out=out,
@@ -1338,7 +1338,7 @@ class _Events:
     """JSON lines on stderr.
 
     The split is the whole interface: **stdout is the transcript and nothing else**, so
-    `lt dictate | pbcopy` works with no flags, while anything that wants a level meter or
+    `m dictate | pbcopy` works with no flags, while anything that wants a level meter or
     a state machine subscribes to stderr without disturbing that.
     """
 
@@ -1377,8 +1377,8 @@ def dictate(
     Talk; stop talking; the text is on stdout. Nothing else ever is — status goes to
     stderr — so it pipes:
 
-        lt dictate | pbcopy
-        lt dictate | tee -a ~/notes.md
+        m dictate | pbcopy
+        m dictate | tee -a ~/notes.md
 
     [b]SIGINT means "I stopped talking"[/], not "abort": the utterance in progress is
     still transcribed and printed. That is what makes hold-to-talk work from any hotkey
@@ -1388,7 +1388,7 @@ def dictate(
     Two ways to decide when you're done, and a key-driven one wants the second:
 
     [b]default[/] — the pause ends it. The VAD closes an utterance after 750ms of silence
-    and that is the whole result. Right for a bare `lt dictate | pbcopy` with nothing
+    and that is the whole result. Right for a bare `m dictate | pbcopy` with nothing
     driving it.
 
     [b]--hold[/] — the signal ends it. Pauses no longer stop anything, so you can think

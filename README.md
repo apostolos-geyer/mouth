@@ -8,7 +8,7 @@ Adapted from the offline pipeline at `~/Desktop/school/spring-2026/tools/qwen-tr
 ## Install
 
 ```sh
-uv tool install -e ".[mlx,diarize]"    # a system-wide `lt`, live against this clone
+uv tool install -e ".[mlx,diarize]"    # a system-wide `m`, live against this clone
 uv tool update-shell                   # once, if uv's bin dir isn't on your PATH yet
 ```
 
@@ -18,15 +18,15 @@ update one. uv caches the built wheel for a local path, so a rebuild needs
 `--refresh-package mouth`, and without it the install silently stays behind.
 
 That failure is worth recognising, because it doesn't look like a stale binary: an old
-`lt` paired with a current config file rejects its own config.
+`m` paired with a current config file rejects its own config.
 
 ```
-$ lt tui
+$ m tui
 Invalid value for --config: unknown option --min-speech.
 ```
 
 The extras are the two heavy optional paths — `mlx` is the MLX backend (`--backend mlx`,
-and what `lt quantize` needs), `diarize` is `lt diarize`. Neither is a default dependency,
+and what `m quantize` needs), `diarize` is `m diarize`. Neither is a default dependency,
 because the first pulls the whole mlx stack and the second coremltools. `uv tool install .`
 gets the torch path alone.
 
@@ -34,35 +34,35 @@ Or run it out of the repo without installing anything:
 
 ```sh
 uv sync
-uv run lt tui          # or: uv run mouth tui
+uv run m tui           # the package is `mouth`; the command is `m`
 ```
 
 ## Commands
 
 ```sh
-lt tui                    # full-screen live view (q quit · p pause · c clear)
-lt cli                    # streaming output to stdout
-lt dictate                # speech to stdout, then exit (--hold for hold-to-talk)
-lt transcribe FILE        # a file, as fast as the machine can (~17x realtime)
-lt transcribe FILE --speakers   # ...and label who said what
-lt devices                # list microphones
-lt languages              # list supported ASR languages
-lt backends               # which inference backends are installed
-lt models                 # local checkpoints available to --model
-lt quantize               # build a quantised checkpoint (the big perf win)
-lt diarize FILE           # who spoke when, offline
-lt paths                  # where config, transcripts and checkpoints live
-lt config                 # defaults for the flags you always pass
-lt tune                   # set it up for your machine and your voice
-lt cadence 10             # what the partial schedule costs on a 10s utterance
+m tui                    # full-screen live view (q quit · p pause · c clear)
+m cli                    # streaming output to stdout
+m dictate                # speech to stdout, then exit (--hold for hold-to-talk)
+m transcribe FILE        # a file, as fast as the machine can (~17x realtime)
+m transcribe FILE --speakers   # ...and label who said what
+m devices                # list microphones
+m languages              # list supported ASR languages
+m backends               # which inference backends are installed
+m models                 # local checkpoints available to --model
+m quantize               # build a quantised checkpoint (the big perf win)
+m diarize FILE           # who spoke when, offline
+m paths                  # where config, transcripts and checkpoints live
+m config                 # defaults for the flags you always pass
+m tune                   # set it up for your machine and your voice
+m cadence 10             # what the partial schedule costs on a 10s utterance
 
-lt tui -l Greek -m 2      # language + mic index
-lt cli --wav clip.m4a     # replay a file *in real time*, as if it were the mic
-lt transcribe clip.m4a    # the same file, at full speed, for the transcript
-lt tui --context "Aristotle, peripatetic, Lyceum"   # words to expect
-lt cli --no-record        # don't save audio
+m tui -l Greek -m 2      # language + mic index
+m cli --wav clip.m4a     # replay a file *in real time*, as if it were the mic
+m transcribe clip.m4a    # the same file, at full speed, for the transcript
+m tui --context "Aristotle, peripatetic, Lyceum"   # words to expect
+m cli --no-record        # don't save audio
 
-lt dictate -b mlx -M qwen3-asr-1.7b-q8g64 | pbcopy    # same --backend/--model as anywhere
+m dictate -b mlx -M qwen3-asr-1.7b-q8g64 | pbcopy    # same --backend/--model as anywhere
 ```
 
 First run downloads ~5GB of weights. After that, time-to-ready is a property of the
@@ -77,8 +77,8 @@ the next. Setting it properly is worth it.
 ## Setup
 
 ```sh
-lt tune                   # say a few things; it measures and writes your config
-lt tune --wav clip.flac   # measure against a recording instead
+m tune                   # say a few things; it measures and writes your config
+m tune --wav clip.flac   # measure against a recording instead
 ```
 
 Asks you to say a few things, times how fast this machine transcribes them, and offers a
@@ -95,7 +95,7 @@ verdict beside them is measured.
 ## Transcribing a file
 
 ```sh
-lt transcribe lecture.m4a
+m transcribe lecture.m4a
 ```
 
 Same VAD, same model, same outputs as a live session — but the audio is already on disk,
@@ -103,11 +103,11 @@ so nothing waits on a clock. Measured on an M3 Max with the 8-bit checkpoint: **
 realtime**, a 32s clip in 1.9s. Partials are off, because nobody is watching text land and
 provisional passes are the expensive half of a live session.
 
-`lt cli --wav` still exists and still paces to the clock — that is for *watching* a replay,
+`m cli --wav` still exists and still paces to the clock — that is for *watching* a replay,
 which is a different thing from wanting the transcript.
 
 ```sh
-lt transcribe interview.m4a --speakers      # or -n 2 if you know the count
+m transcribe interview.m4a --speakers      # or -n 2 if you know the count
 ```
 
 adds `.rttm`, `.speakers.json` (every word with a speaker) and `.speakers.md`:
@@ -136,7 +136,7 @@ Getting there found two bugs worth naming, because both failed silently:
   so it now takes a low percentile of the whole recording. Mic audio is unaffected — on a
   recorded utterance both estimators produce exactly 0.005.
 
-One decode and one pass over the file — running `lt diarize` afterwards would re-read and
+One decode and one pass over the file — running `m diarize` afterwards would re-read and
 re-analyse it, and leave you pasting a generated filename between two commands.
 
 **The diarizer runs first**, and its speaker changes become extra boundaries for the
@@ -212,7 +212,7 @@ guessing would invent an attribution the audio doesn't support.
 ## Context
 
 ```sh
-lt tui --context "Aristotle, peripatetic, the Lyceum"
+m tui --context "Aristotle, peripatetic, the Lyceum"
 ```
 
 Qwen3-ASR biases decoding toward words you tell it to expect: names, jargon, spellings.
@@ -227,9 +227,9 @@ protocol, alongside `Streaming` and `Drafting`.
 The flags you'd otherwise type every time, in a file:
 
 ```sh
-lt config --init          # write a commented starter
-lt config                 # show what it sets, per command
-lt config --edit          # open it in $EDITOR
+m config --init          # write a commented starter
+m config                 # show what it sets, per command
+m config --edit          # open it in $EDITOR
 ```
 
 ```toml
@@ -278,7 +278,7 @@ and `--dir` or `model_dir` for the one place they differ — and an unknown key 
 with a suggestion rather than a shrug:
 
 ```
-$ lt config
+$ m config
 [dictate] has no --holdd. Did you mean --hold?
 ```
 
@@ -286,7 +286,7 @@ That's the point of validating at all. A config file is written once and read ne
 typo that silently does nothing is a setting you believe is on for months.
 
 `--config PATH` or `LT_CONFIG` point somewhere else, and a file named by hand must exist —
-a typo'd path shouldn't silently fall back to your defaults. `lt config` does its own
+a typo'd path shouldn't silently fall back to your defaults. `m config` does its own
 loading, so it still reports on a file too broken for any other command to run.
 
 One TOML rule worth knowing, since it bites here: bare keys must come **before** the first
@@ -301,7 +301,7 @@ src/mouth/
   vad.py         VAD + Cadence (when partials fire)
   engine.py      model loading, inference worker, session driver
   backends.py    torch / mlx behind one transcribe() method
-  quantize.py    build quantised MLX checkpoints (`lt quantize`)
+  quantize.py    build quantised MLX checkpoints (`m quantize`)
   sources.py     mic and wav frame sources, and remembered VAD thresholds
   audio.py       decode wav/flac/m4a/mp3/mp4 to 16k mono
   recorder.py    per-utterance audio + manifest
@@ -394,7 +394,7 @@ first partial lands sooner:
 | adaptive (default) | 0.4s | 31.3s (3.1x realtime) |
 | `--partials stream` | 0.4s | 10.0s (1.0x realtime) |
 
-`lt cadence <seconds>` prints this for any setting. `--growth 1.0` reverts to fixed
+`m cadence <seconds>` prints this for any setting. `--growth 1.0` reverts to fixed
 spacing, which is the honest baseline for benchmarking.
 
 Two things keep partials affordable: they skip the forced aligner
@@ -442,12 +442,12 @@ that, fixed per-call overhead dominates and throughput reads several times too l
 
 ## Dictation
 
-`lt tui` and `lt cli` are sessions. `lt dictate` is one dictation:
+`m tui` and `m cli` are sessions. `m dictate` is one dictation:
 
 ```sh
-lt dictate | pbcopy                 # talk, stop talking, it's on the clipboard
-lt dictate | tee -a ~/notes.md
-lt dictate || say "nothing heard"
+m dictate | pbcopy                 # talk, stop talking, it's on the clipboard
+m dictate | tee -a ~/notes.md
+m dictate || say "nothing heard"
 ```
 
 Talk; stop talking; the text is on **stdout**, and nothing else ever is. Status, errors and
@@ -463,7 +463,7 @@ No daemon, no socket, no UI in here. It's a surface for other programs to compos
 Not "abort". The utterance in progress is still transcribed and printed:
 
 ```sh
-lt dictate --hold > /tmp/said &   # key down
+m dictate --hold > /tmp/said &   # key down
 kill -INT %1                      # key up — and the text still lands
 ```
 
@@ -476,7 +476,7 @@ The termination policy is the thing that varies, and a key-driven flow wants the
 
 | | ends when | for |
 |---|---|---|
-| default | the VAD sees 750ms of silence | a bare `lt dictate \| pbcopy`, nothing driving it |
+| default | the VAD sees 750ms of silence | a bare `m dictate \| pbcopy`, nothing driving it |
 | `--hold` | you signal | hold-to-talk |
 
 Without `--hold`, the pause that closes an utterance also ends the command — so thinking
@@ -484,10 +484,10 @@ for a second mid-sentence truncates the dictation there, while the key is still 
 you're still talking:
 
 ```
-$ lt dictate --wav paused.wav            # speech, 1.5s pause, more speech
+$ m dictate --wav paused.wav            # speech, 1.5s pause, more speech
 But it was like private capital that funded the acquisition.
 
-$ lt dictate --wav paused.wav --hold
+$ m dictate --wav paused.wav --hold
 But it was like private capital that funded the acquisition. Super appreciate. Thank
 you, Charlie. Absolutely, happy to. And so, if you have more questions or you need more.
 ```
@@ -520,7 +520,7 @@ open, which a process launched on a keypress isn't yet.
 
 `--backend` and `--model` are the same flags as everywhere else, and torch on upstream
 weights is still the default — a fresh checkout has no quantised checkpoint, and
-`lt quantize` is a deliberate step. What changes for dictation is that **launch cost is
+`m quantize` is a deliberate step. What changes for dictation is that **launch cost is
 now part of the interaction**, so it's worth knowing what each checkpoint costs. Every
 one of these on an M3 Max, `-t` given so no calibration, best of 2:
 
@@ -548,7 +548,7 @@ Two things fall out of that, neither of them obvious:
 
 So the whole menu costs about the same to start, and the trade left is accuracy against
 ~0.1s of inference. Which end of that you want isn't something this tool should decide;
-`lt models` lists what you have.
+`m models` lists what you have.
 
 Two things get startup there in the first place, and the second is the bigger one:
 
@@ -572,7 +572,7 @@ otherwise drop transcripts and audio into it, and `.gitignore` becomes load-bear
 Defaults follow the XDG Base Directory spec.
 
 ```sh
-lt paths                  # show them, and which flag overrides each
+m paths                  # show them, and which flag overrides each
 ```
 
 | | default | override |
@@ -583,7 +583,7 @@ lt paths                  # show them, and which flag overrides each
 | checkpoints | `$XDG_CACHE_HOME/mouth/models` | `--model` |
 
 Falling back to `~/.config`, `~/.local/share` and `~/.cache`. Checkpoints live under the **cache**
-because `lt quantize` rebuilds any of them from upstream weights — losing that directory
+because `m quantize` rebuilds any of them from upstream weights — losing that directory
 costs time, not work. Transcripts and recordings are data and don't.
 
 macOS's own convention is `~/Library/Application Support`; the env vars are honoured, so
@@ -620,17 +620,17 @@ suppression broad enough to hide both.
 Inference sits behind a `Backend` Protocol in `backends.py`, selected with `--backend`:
 
 ```sh
-lt backends                # which are installed
-lt models                  # checkpoints available to --model
-lt tui --backend torch     # default: PyTorch + transformers on MPS
-lt tui --backend mlx       # MLX port (needs: uv sync --extra mlx)
+m backends                # which are installed
+m models                  # checkpoints available to --model
+m tui --backend torch     # default: PyTorch + transformers on MPS
+m tui --backend mlx       # MLX port (needs: uv sync --extra mlx)
 
-lt tui -M qwen3-asr-1.7b-q8g64 -b mlx          # a quantised checkpoint, by name
-lt tui --aligner Qwen/Qwen3-ForcedAligner-0.6B --dtype bf16
+m tui -M qwen3-asr-1.7b-q8g64 -b mlx          # a quantised checkpoint, by name
+m tui --aligner Qwen/Qwen3-ForcedAligner-0.6B --dtype bf16
 ```
 
 Weights are configuration, not constants. `--model` and `--aligner` each take a checkpoint
-name (resolved against the checkpoint directory — `lt models` lists them), a path, or an HF
+name (resolved against the checkpoint directory — `m models` lists them), a path, or an HF
 repo id, and `--dtype` picks compute precision (`auto` = bf16 on torch,
 fp16 on mlx). Quantisation is read off the checkpoint rather than passed as a flag,
 because it is a property of the weights on disk.
@@ -679,22 +679,22 @@ interjection) landed at 1.28s against torch's 0.24s; with an 8-bit aligner every
 matches torch exactly. Same command, different flag:
 
 ```sh
-lt quantize Qwen/Qwen3-ForcedAligner-0.6B    # -> models/qwen3-forcedaligner-0.6b-q8g64
-lt tui -b mlx -M models/qwen3-asr-1.7b-q8g64 --aligner models/qwen3-forcedaligner-0.6b-q8g64
+m quantize Qwen/Qwen3-ForcedAligner-0.6B    # -> models/qwen3-forcedaligner-0.6b-q8g64
+m tui -b mlx -M models/qwen3-asr-1.7b-q8g64 --aligner models/qwen3-forcedaligner-0.6b-q8g64
 ```
 
 4-bit costs +0.43pp WER upstream for another ~1.7x on long clips.
 
 ```sh
-lt quantize                                  # 8-bit by default -> models/qwen3-asr-1.7b-q8g64
-lt quantize --bits 4                         # speed-first
-lt quantize --mode mxfp4                     # MLX float modes: mxfp4, mxfp8, nvfp4
-lt models                                    # what's on disk
-lt tui --backend mlx -M models/qwen3-asr-1.7b-q8g64
+m quantize                                  # 8-bit by default -> models/qwen3-asr-1.7b-q8g64
+m quantize --bits 4                         # speed-first
+m quantize --mode mxfp4                     # MLX float modes: mxfp4, mxfp8, nvfp4
+m models                                    # what's on disk
+m tui --backend mlx -M models/qwen3-asr-1.7b-q8g64
 ```
 
 `torch` stays the **default** because a fresh checkout has no quantised checkpoint and
-`lt quantize` is a deliberate step. Once you've run it, mlx is the fast path.
+`m quantize` is a deliberate step. Once you've run it, mlx is the fast path.
 
 One upstream limitation worth knowing: `mlx_qwen3_asr`'s loader reads `bits` and
 `group_size` out of `quantization_config.json` but always re-quantises with
@@ -787,7 +787,7 @@ they are what gets saved, and they stay on the library's own `transcribe()`.
 
 ### Batching, and why finals aren't
 
-Batching is the obvious lever for `lt transcribe`, which produces a queue of finished
+Batching is the obvious lever for `m transcribe`, which produces a queue of finished
 utterances with nothing waiting on them. It does not pay, and the reason is upstream:
 `mlx_qwen3_asr.transcribe_batch` is `for index, audio in enumerate(audios)` — a
 convenience wrapper, not a batched forward pass. Measured over 12 real utterances
@@ -841,10 +841,10 @@ Who spoke when, as a separate stage from what was said.
 
 ```sh
 uv sync --extra diarize
-lt diarize meeting.m4a                       # wav, flac, m4a, mp3, mp4
-lt diarize meeting.m4a -o meeting.rttm       # RTTM for dscore / pyannote.metrics
-lt diarize meeting.m4a --words out/x.words.json   # label an existing transcript
-lt diarize meeting.m4a -n 3                  # exact speaker count, if known
+m diarize meeting.m4a                       # wav, flac, m4a, mp3, mp4
+m diarize meeting.m4a -o meeting.rttm       # RTTM for dscore / pyannote.metrics
+m diarize meeting.m4a --words out/x.words.json   # label an existing transcript
+m diarize meeting.m4a -n 3                  # exact speaker count, if known
 ```
 
 It runs the pyannote community-1 family through **CoreML**, not torch: the segmentation
@@ -965,7 +965,7 @@ uv run pytest tests/ -q        # ~25s, offline
 
 All four are clean. Two of ruff's defaults are disabled because they invert this
 codebase's design rather than critique it: **PLC0415** (imports inside functions) fires
-146 times on the lazy imports that let `lt devices` run without importing torch and let
+146 times on the lazy imports that let `m devices` run without importing torch and let
 dictation start on a keypress, and **B008** (calls in argument defaults) is typer's API.
 Complexity metrics are off for the same reason — `segment_utterances` and the decode loop
 are long because they're state machines, and splitting them would spread the state.
@@ -1000,4 +1000,4 @@ download when the CoreML weights aren't already cached, which keeps the suite of
 
 `tests/test_core.py` also pins the `mlx_qwen3_asr` private names that
 `backends._load_mlx_model` reimplements, so an upstream rename fails here with the reason
-instead of surfacing as an ImportError halfway through `lt tui`.
+instead of surfacing as an ImportError halfway through `m tui`.

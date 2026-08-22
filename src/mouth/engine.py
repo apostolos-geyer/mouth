@@ -84,7 +84,7 @@ class Config:
     device: str = "mps"
     backend: str = "torch"
     # Weights are configuration, not a constant: any of these may be a local directory,
-    # notably a quantised one from `lt quantize`.
+    # notably a quantised one from `m quantize`.
     model: str = DEFAULT_ASR
     aligner: str = DEFAULT_ALIGNER
     # "auto" resolves per backend -- bf16 for torch/MPS, fp16 for MLX. Ignored for the
@@ -94,7 +94,7 @@ class Config:
     wav: Path | None = None
     # Pace a replayed file to the clock, as if it were arriving from a microphone. True
     # for the live front ends -- watching a demo replay at 40x is not watching anything --
-    # and False for `lt transcribe`, where the audio is already on disk and the wall clock
+    # and False for `m transcribe`, where the audio is already on disk and the wall clock
     # is nothing but a delay.
     realtime: bool = True
     threshold: float | None = None
@@ -122,7 +122,7 @@ class Config:
     stream_chunk_sec: float = 2.0
     session_id: str = ""
     # Whether finals run the forced aligner. Off is for callers that want a string and
-    # not a transcript -- `lt dictate` -- and pairs with load_backend(align=False), which
+    # not a transcript -- `m dictate` -- and pairs with load_backend(align=False), which
     # is what actually saves the load. Leaving this on with an unaligned backend raises.
     timestamps: bool = True
     # How long a deliberate stop waits on an in-flight final. The default suits a session

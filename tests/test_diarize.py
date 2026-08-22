@@ -256,7 +256,7 @@ def _diarizer():
 
 @pytest.fixture(scope="module")
 def excerpt_turns():
-    # audio.load, not soundfile directly: this is the decode path `lt diarize` uses, so
+    # audio.load, not soundfile directly: this is the decode path `m diarize` uses, so
     # the end-to-end test exercises it rather than a parallel one that could rot.
     from mouth.audio import SAMPLE_RATE, load
 

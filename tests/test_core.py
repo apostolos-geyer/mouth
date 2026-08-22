@@ -428,7 +428,7 @@ def test_ctrl_c_during_model_load_exits_immediately(tmp_path):
             raise KeyboardInterrupt()
 
         m._load = boom          # stub the backend load seam: never touch a real model
-        sys.argv = ["lt", "tui", "--no-record"]
+        sys.argv = ["m", "tui", "--no-record"]
         m.main()
     """)
     )
@@ -571,7 +571,7 @@ def test_mlx_loader_upstream_symbols_still_exist():
     hard-codes nn.quantize(mode="affine") and so cannot open an mxfp4/mxfp8/nvfp4
     checkpoint. The cost of that choice is a dependency on private names: if a release
     renames one, the failure would otherwise surface as an ImportError halfway through
-    `lt tui`, after the spinner. Fail here instead, with the reason.
+    `m tui`, after the spinner. Fail here instead, with the reason.
     """
     pytest.importorskip("mlx_qwen3_asr")
     from mlx_qwen3_asr import load_models
@@ -592,7 +592,7 @@ def test_mlx_loader_upstream_symbols_still_exist():
 
 
 def test_mlx_quantize_supports_the_modes_we_offer():
-    """`lt quantize --mode` only lists modes MLX can actually produce."""
+    """`m quantize --mode` only lists modes MLX can actually produce."""
     mx = pytest.importorskip("mlx.core")
     import inspect
 
@@ -601,7 +601,7 @@ def test_mlx_quantize_supports_the_modes_we_offer():
     from mouth.quantize import MODES
 
     assert "mode" in inspect.signature(nn.quantize).parameters, (
-        "mlx.nn.quantize lost its `mode` parameter; `lt quantize --mode` and "
+        "mlx.nn.quantize lost its `mode` parameter; `m quantize --mode` and "
         "backends._load_mlx_model both depend on it."
     )
     doc = mx.quantize.__doc__ or ""
@@ -743,7 +743,7 @@ def test_missing_checkpoint_dir_is_not_a_crash(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "absent"))
     with pytest.raises(BackendUnavailable) as exc:
         resolve_checkpoint("models/nope")
-    assert "lt quantize" in str(exc.value)
+    assert "m quantize" in str(exc.value)
 
 
 # ------------------------------------------------------------ incremental partials
@@ -939,7 +939,7 @@ def test_transcriber_can_skip_the_aligner():
 
 
 def _dictate(tmp_path, spec, *args):
-    """Run `lt dictate --wav` in a child with the model seam stubbed out."""
+    """Run `m dictate --wav` in a child with the model seam stubbed out."""
     import subprocess
     import textwrap
 
@@ -963,12 +963,12 @@ def _dictate(tmp_path, spec, *args):
                 return Transcription(text="hello there")
 
         m._load = lambda *a, **k: Fake()
-        sys.argv = ["lt", "dictate", "--wav", {str(wav)!r}, *{list(args)!r}]
+        sys.argv = ["m", "dictate", "--wav", {str(wav)!r}, *{list(args)!r}]
         m.main()
     """)
     )
     # XDG_CONFIG_HOME at a scratch dir: the child would otherwise read the developer's
-    # own config.toml, whose whole purpose is to change what `lt dictate` does.
+    # own config.toml, whose whole purpose is to change what `m dictate` does.
     env = {**os.environ, "XDG_CONFIG_HOME": str(tmp_path / "config")}
     return subprocess.run(
         [sys.executable, str(child)], capture_output=True, timeout=180, env=env, check=False
@@ -1002,7 +1002,7 @@ def test_dictate_stops_after_one_utterance(tmp_path):
 
 
 def test_dictate_exits_nonzero_on_silence(tmp_path):
-    """`lt dictate | pbcopy` must not clobber the clipboard with nothing."""
+    """`m dictate | pbcopy` must not clobber the clipboard with nothing."""
     proc = _dictate(tmp_path, [(False, 3.0)], "--wait", "1")
 
     assert proc.returncode == 1
@@ -1120,7 +1120,7 @@ def test_a_typo_is_an_error_with_a_suggestion():
 def test_either_spelling_of_a_flag_resolves():
     """--max-gap is what --help prints; max_gap is what the parameter is called."""
     assert _map("max-gap = 5.0\n")["tui"] == _map("max_gap = 5.0\n")["tui"]
-    # And where the two differ -- `lt models --dir` sets model_dir -- both still land.
+    # And where the two differ -- `m models --dir` sets model_dir -- both still land.
     assert _map('[models]\ndir = "/ckpts"\n') == {"models": {"model_dir": "/ckpts"}}
 
 
@@ -1163,7 +1163,7 @@ def test_a_flag_still_beats_the_file(tmp_path):
 
 
 def test_a_broken_config_stops_every_command_but_reports_itself(tmp_path):
-    """`lt config` is how you find out what's wrong with the file, so it survives one."""
+    """`m config` is how you find out what's wrong with the file, so it survives one."""
     broken = 'backend = "mlx"\nlanguage =\n'
     assert _invoke(tmp_path, broken, "cadence", "10").exit_code == 2
 
@@ -1322,7 +1322,7 @@ def test_drafted_decode_upstream_symbols_still_exist():
     )
 
 
-# ------------------------------------------------------------------ lt tune
+# ------------------------------------------------------------------ m tune
 
 
 def test_voiced_frames_are_not_clip_length():
@@ -1418,7 +1418,7 @@ def test_recommendation_never_returns_nothing():
 
 
 def test_tuned_config_is_valid_and_says_what_it_set():
-    """`lt tune --write` writes something `lt config` can read back."""
+    """`m tune --write` writes something `m config` can read back."""
     import tomllib
 
     from mouth import tune as tn
@@ -1435,7 +1435,7 @@ def test_tuned_config_is_valid_and_says_what_it_set():
     data = tomllib.loads(text)
     assert data["backend"] == "mlx" and data["min-speech"] == 0.12
     assert data["partials"] == "x-draft"
-    # Bare, not under [tui]: `lt cli` draws partials too and `lt cadence` prints what
+    # Bare, not under [tui]: `m cli` draws partials too and `m cadence` prints what
     # the schedule costs, so a table would leave both on the shipped defaults.
     assert (data["interim"], data["growth"], data["max-gap"]) == (0.15, 1.25, 1.2)
     # And it round-trips through the real validator, against the real CLI.

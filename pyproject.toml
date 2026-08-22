@@ -22,8 +22,7 @@ mlx = ["mlx-qwen3-asr>=0.3.5"]
 diarize = ["coremltools>=9.0", "scipy>=1.11"]
 
 [project.scripts]
-mouth = "mouth.app:main"
-lt = "mouth.app:main"
+m = "mouth.app:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -66,7 +65,7 @@ ignore = [
     # Long lines are already capped by line-length; E501 on top of the formatter only
     # ever fires on strings and URLs that cannot be wrapped.
     "E501",
-    # Imports live inside functions on purpose, and it is load-bearing: `lt devices`
+    # Imports live inside functions on purpose, and it is load-bearing: `m devices`
     # must not import torch, and dictation starting on a keypress depends on nothing
     # heavy being imported until something needs it. This rule is a straight inversion
     # of the design.

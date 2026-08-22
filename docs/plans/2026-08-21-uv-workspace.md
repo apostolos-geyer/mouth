@@ -20,7 +20,7 @@ Every uv mechanism named below was executed against uv 0.9.16 before being writt
 
 > **Revision, 2026-08-21.** The first version of this plan was written from an import
 > graph. Extracting the actual call graph — statically, then by tracing a real
-> `lt transcribe --speakers` — changed three things in it: `formats.py` turned out to
+> `m transcribe --speakers` — changed three things in it: `formats.py` turned out to
 > call into `diarize` (D7 below), the heaviest boundary traffic runs *from* core *into*
 > the CLI rather than the reverse (§3.4), and the interface carrying that traffic is a
 > docstring rather than a type (D8). Slices 1–3 are unchanged.
@@ -38,7 +38,7 @@ being written against the package as it stands, and none of them is about websoc
 **The interface it would implement is a docstring.** `run_session` drives the entire
 session by calling back into a `hooks` object: six methods, specified in prose at
 `engine.py:322-330`, implemented three times as anonymous classes inside typer commands.
-A traced `lt transcribe --speakers` puts **1,083 of 1,135 cross-package calls** through
+A traced `m transcribe --speakers` puts **1,083 of 1,135 cross-package calls** through
 it (research §1.3) — more than every other cross-module edge in the program combined.
 Nothing type-checks it, and a fourth implementation is the entire point of this refactor.
 
@@ -64,11 +64,11 @@ Read after shipping, in this order:
 1. A virtualenv with only `mouth-core` installed can run a session end to
    end. `import typer` fails in it. This is a test, not a convention —
    research §2.4 shows the namespace does not paper over a missing member.
-2. `lt transcribe FILE --speakers` produces its seven output files with the same content
+2. `m transcribe FILE --speakers` produces its seven output files with the same content
    as at `118ae70`, and the code that times words by speaker block is reachable without
    importing anything that draws to a terminal.
 3. `uv tool install -e './packages/mouth-cli[mlx,diarize]'` gives a live
-   `lt`, with edits to **core** picked up without a reinstall — verified behaviour, not a
+   `m`, with edits to **core** picked up without a reinstall — verified behaviour, not a
    hope (research §2.3).
 4. The four checks in README §Checks are still clean and still one command each. (One
    of them was not, at the base commit — see §4.)
@@ -147,11 +147,11 @@ Three consequences worth naming:
 - **`coremltools` and `scipy` stop being extras and become plain dependencies of
   `mouth-diarize`.** Installing that distribution *is* the opt-in. The
   `diarize` extra survives at the CLI level and now gates a whole package rather than
-  two libraries, so `lt transcribe --speakers` fails the same way it does today.
+  two libraries, so `m transcribe --speakers` fails the same way it does today.
 - **`rich` gets declared.** It is imported at `app.py:15` and `tui.py:16` and is not in
   `[project.dependencies]` today — it arrives transitively through `typer`. That works
   until it doesn't.
-- **`quantize.py` goes to core, not the CLI.** It is `lt quantize`'s implementation, but
+- **`quantize.py` goes to core, not the CLI.** It is `m quantize`'s implementation, but
   it shares the `mlx` extra with `backends.py`, and putting it in core lets that extra be
   declared once.
 
@@ -163,7 +163,7 @@ Three consequences worth naming:
 | D2 | Three members now; `mouth-server` later | Create the server package empty in this plan | An empty package is a claim about a design that has not been made. §5 shows the seam it will attach to; that is enough to check the boundary is in the right place. |
 | D3 | Directory names match distribution names (`packages/mouth-core/`) | Short names (`packages/core/`) | `uv sync` prints distribution names. When the two diverge, output stops matching the tree. Costs a longer `uv tool install` path, once. |
 | D4 | One `tests/` at the repo root | Per-package `tests/`, run with `uv run --package X pytest` | The suite is 2,050 lines, offline, and cross-cutting — `test_core.py` alone touches `config`, `backends`, `formats`, `recorder`, `vad`, `paths` and `tune`. The root venv holds every member, so the suite runs unchanged. |
-| D5 | `config.py` stays whole, in the CLI | Split its file-reading half into core | `default_map`, `EXCLUDED`, `reaches` and `template` are all Click-shaped. The server will be launched *by* the CLI (`lt serve`), so it receives a built `Config` rather than reading the file itself. Revisit if that stops being true. |
+| D5 | `config.py` stays whole, in the CLI | Split its file-reading half into core | `default_map`, `EXCLUDED`, `reaches` and `template` are all Click-shaped. The server will be launched *by* the CLI (`m serve`), so it receives a built `Config` rather than reading the file itself. Revisit if that stops being true. |
 | D6 | Lint and type configuration stays in the root `pyproject.toml` | Per-member tool config | Verified: `ty` reports a cross-package type error with both files named, and `ruff` honours `"**/app.py"` per-file-ignores from the root. One config, four commands, unchanged. |
 | D7 | `formats.write_outputs` and `speaker_md` take **already-labelled** words; the `from .diarize import label_words` at `formats.py:88,164` goes away | Move `Turn` and `label_words` into core; or put `formats.py` in the diarize package | This is the only `core → diarize` import in the tree and the call graph shows the primary command path hits it (research §1.3). It is also nearly dead already: in the traced run `write_outputs`' own call site did **not** fire, because `_align_blocks` had labelled every word — which the comment at `formats.py:168` says it relies on. Making pre-labelling the contract deletes the fallback rather than relocating it. `formats` keeps reading `Turn.start/.end/.speaker/.duration` duck-typed, which needs no import and is fine. |
 | D8 | Declare the `hooks` contract as `engine.SessionHooks`, a `typing.Protocol` | Leave it as the docstring at `engine.py:322-330` | It carries 1,083 of 1,135 cross-seam calls and has three implementations, none of which any checker can verify against it. A fourth is the entire point of this refactor. Same shape as `Backend`, `Biasable` and `Aligning`, which the codebase already expresses this way and which `56002b1` chose deliberately over flags. |
@@ -179,10 +179,10 @@ Three consequences worth naming:
   without a second edit.
 - `[tool.ty.src] include` and `[tool.ty.environment] root` — the three member `src`
   directories.
-- `[project.scripts]` (`mouth`, `lt`) — to `mouth-cli`.
+- `[project.scripts]` (`m`) — to `mouth-cli`.
 - `__version__ = "0.3.0"` at `src/mouth/__init__.py:3` — deleted with the
   file. Nothing reads it (research §1.6). Each member carries its own `version` in
-  `pyproject.toml`, all starting at `0.4.0`. If `lt --version` is ever wanted:
+  `pyproject.toml`, all starting at `0.4.0`. If `m --version` is ever wanted:
   `importlib.metadata.version("mouth-cli")`.
 
 ---
@@ -262,7 +262,7 @@ def align_by_speaker(
 ```
 
 Lives in `diarize`, not core, because it needs `diarize.speaker_blocks`. That is the
-right home anyway: it is the speaker half of `lt transcribe --speakers`.
+right home anyway: it is the speaker half of `m transcribe --speakers`.
 
 ```python
 # mouth/diarize/run.py       (diarize)    <- app.py:1095-1127
@@ -285,7 +285,7 @@ def speaker_holds(turns, duration: float) -> list[tuple[int, float, float]]: ...
 class SessionHooks(Protocol):
     """What run_session calls back into. The front end supplies this.
 
-    Carries 1,083 of the 1,135 cross-package calls in a traced `lt transcribe
+    Carries 1,083 of the 1,135 cross-package calls in a traced `m transcribe
     --speakers` run -- the busiest interface in the program, and until now the only
     one described in prose rather than in types.
     """
@@ -315,7 +315,7 @@ def write_outputs(
     # already labelled every word -- which is what the comment at :168 relies on.
 ```
 
-### 3.3 Call stack for `lt transcribe --speakers`, before → after
+### 3.3 Call stack for `m transcribe --speakers`, before → after
 
 Not sketched — traced. `sys.setprofile` over a real run against the fixture, mlx backend,
 all seven outputs written; `x N` is the measured call count.
@@ -384,7 +384,7 @@ Three consequences for this plan:
 
 ## 4. Vertical slices
 
-Four slices. Each one ends with the tree green and `lt` working — no slice leaves the
+Four slices. Each one ends with the tree green and `m` working — no slice leaves the
 repo in a state where the next one is required. Each carries two checklists, and **the
 manual column is not tickable by an agent.**
 
@@ -422,16 +422,16 @@ the lockfile and `uv tool install` all survive the move, before a single module 
 is drawn.
 
 **Automated** — the four above, plus:
-- [ ] `uv run lt --help`, `uv run lt paths`, `uv run lt backends` exit 0
+- [ ] `uv run m --help`, `uv run m paths`, `uv run m backends` exit 0
 - [ ] `uv.lock` regenerates and resolves the same versions (`git diff uv.lock` shows only
       the source-path change)
 
 **Manual**
-- [ ] `uv tool install -e './packages/mouth[mlx,diarize]' --force`, then `lt`
+- [ ] `uv tool install -e './packages/mouth[mlx,diarize]' --force`, then `m`
       from an unrelated directory
-- [ ] `lt tui` against the mic: partials render, `k` opens the context field, editing it
+- [ ] `m tui` against the mic: partials render, `k` opens the context field, editing it
       changes the next utterance
-- [ ] `lt dictate | pbcopy` round-trips
+- [ ] `m dictate | pbcopy` round-trips
 
 ### Slice 2 — cut `diarize` out
 
@@ -454,9 +454,9 @@ PEP 420 change lands, on the boundary with the least to go wrong.
       (`mouth.__file__ is None`)
 
 **Manual**
-- [ ] `lt diarize tests/fixtures/interview-excerpt.flac` prints the same speakers and
+- [ ] `m diarize tests/fixtures/interview-excerpt.flac` prints the same speakers and
       hold times as at `118ae70`
-- [ ] `lt transcribe tests/fixtures/interview-excerpt.flac --speakers` still writes all
+- [ ] `m transcribe tests/fixtures/interview-excerpt.flac --speakers` still writes all
       seven files
 
 ### Slice 3 — cut the runtime out of the CLI
@@ -475,10 +475,10 @@ The nine core modules move to `packages/mouth-core/`. `app.py`, `tui.py`,
       research §2 with the multi-root config)
 
 **Manual**
-- [ ] All three front ends against the mic: `lt tui`, `lt cli`, `lt dictate --hold`
-- [ ] `lt tune` completes and `--write` produces a config the new `lt` accepts
+- [ ] All three front ends against the mic: `m tui`, `m cli`, `m dictate --hold`
+- [ ] `m tune` completes and `--write` produces a config the new `m` accepts
 - [ ] `--backend mlx` after `uv sync --extra mlx`
-- [ ] `lt quantize` builds a checkpoint and `lt models` lists it
+- [ ] `m quantize` builds a checkpoint and `m models` lists it
 
 ### Slice 4 — move the contracts out, and declare the seam
 
@@ -502,7 +502,7 @@ the only one that edits Python, so it is last and separable. D7 (`formats` stops
       in count and call volume. A new edge in either direction is a finding, not a pass.
 
 **Manual**
-- [ ] `lt transcribe FILE --speakers` output is byte-identical to `118ae70`'s for the
+- [ ] `m transcribe FILE --speakers` output is byte-identical to `118ae70`'s for the
       fixture, including the per-speaker table and the "N words timed across M speaker
       blocks" line
 - [ ] A block that fails to align still prints its yellow warning and the transcript
@@ -618,7 +618,7 @@ The gate in slice 3 is what proves it.
 | Risk | Signal it happened | Response |
 |---|---|---|
 | A stray `__init__.py` survives in one member | `mouth.__file__` is not `None`; another member's modules stop importing | Slice 2's third automated check catches it |
-| `uv tool install` from a member does not pick up sibling edits | `lt` runs stale core code after an edit | Verified working (research §2.3); if it regresses, `uv tool install -e` each member |
+| `uv tool install` from a member does not pick up sibling edits | `m` runs stale core code after an edit | Verified working (research §2.3); if it regresses, `uv tool install -e` each member |
 | One lockfile cannot satisfy `torch` + `mlx` + `coremltools` together | `uv lock` fails or downgrades something | Already the case today — one distribution, both extras. The workspace does not change the resolution, only where the requirements are written |
 | `ty` loses cross-package resolution | `ty check` reports unresolved imports between members | Verified working with the multi-root config; fallback is to drop `[tool.ty.environment] root` and resolve through the synced `.venv` |
-| Slice 4 changes a user-visible message | Manual check on `lt transcribe --speakers` output | The comparison is against `118ae70` output, captured before slice 1 starts |
+| Slice 4 changes a user-visible message | Manual check on `m transcribe --speakers` output | The comparison is against `118ae70` output, captured before slice 1 starts |

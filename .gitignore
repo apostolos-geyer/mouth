@@ -5,6 +5,6 @@ out/
 recordings/
 *.pyc
 
-# Quantised checkpoints: GBs, and reproducible with `lt quantize`.
+# Quantised checkpoints: GBs, and reproducible with `m quantize`.
 models/
 bench/results/

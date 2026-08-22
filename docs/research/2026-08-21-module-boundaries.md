@@ -22,7 +22,7 @@ Three kinds of evidence, and the difference between them is load-bearing:
 - **Read from the tree** — §1.1, §1.2, §1.4–§1.8. Every line reference is to a file at
   `118ae70` and will drift.
 - **Measured** — §1.3. A static call graph over the AST that counts what it cannot
-  resolve, and a runtime profile of one real `lt transcribe --speakers`. Both extractors
+  resolve, and a runtime profile of one real `m transcribe --speakers`. Both extractors
   are committed at [`tools/`](../../tools/), so every number below is re-runnable.
 - **Executed** — §2. Six throwaway uv workspaces, built, synced and run. Nothing in §2 is
   quoted from documentation; the docs are cited only where they agree or are silent.
@@ -46,8 +46,8 @@ neither, and that is the point of having both.
 
 `pyproject.toml` declares a single package, `mouth`, built by hatchling
 from `src/mouth`, with two optional-dependency groups (`mlx`, `diarize`)
-and two console scripts (`mouth`, `lt`) both pointing at
-`mouth.app:main`.
+and one console script, `m`, pointing at `mouth.app:main` — the distribution and
+import namespace are `mouth`, the command is `m`.
 
 | Module | Lines | Internal imports | Lazy internal | Third-party |
 |---|---:|---|---|---|
@@ -76,7 +76,7 @@ internal imports in the tree. One of them — `formats.py:88` and `formats.py:16
 described as absent. See §1.3.
 
 `*` imported inside a function, not at module scope. That laziness is deliberate and
-documented: `PLC0415` is disabled in `[tool.ruff.lint]` with the reason that `lt devices`
+documented: `PLC0415` is disabled in `[tool.ruff.lint]` with the reason that `m devices`
 must not import torch, and dictation starting on a keypress depends on nothing heavy
 being imported until something needs it.
 
@@ -315,7 +315,7 @@ runs, `language`/`timestamps` when the `Transcriber` is constructed.
 
 ### 1.6 The existing machine-readable surface
 
-`lt dictate --events` (`app.py:1337-1353`) writes JSON lines to **stderr** while stdout
+`m dictate --events` (`app.py:1337-1353`) writes JSON lines to **stderr** while stdout
 carries the transcript and nothing else. The class docstring calls the split "the whole
 interface". Event names emitted: `loading`, plus the states around wait/speech/final
 (`app.py:1442,1466,1499,1510,1521`). README §"Events, for anything that wants to draw"
@@ -415,7 +415,7 @@ uv tool install -e './packages/lt-cli[extra]' --force
 
 installs `lt-cli` **and its workspace siblings** editable — `_editable_impl_lt_core.pth`
 appears in the tool environment, and an edit to core's source changed the installed
-`lt`'s output on the next run. uv discovers the workspace by walking up from the member
+`m`'s output on the next run. uv discovers the workspace by walking up from the member
 directory; no flag is needed.
 
 ### 2.4 A partial install is genuinely partial
@@ -467,9 +467,9 @@ are results, not quotations.
 
 - **§1.1, §1.2 and §1.4–§1.8 are a read, not a run.** Line numbers are from `118ae70`
   and will drift.
-- **§1.3's runtime trace is one command on one machine.** `lt transcribe … --speakers`,
-  mlx backend, `qwen3-asr-1.7b-q8g64`, a 32-second fixture. `lt tui`, `lt cli`,
-  `lt dictate`, `lt tune` and `lt quantize` were **not** traced, so their hook call
+- **§1.3's runtime trace is one command on one machine.** `m transcribe … --speakers`,
+  mlx backend, `qwen3-asr-1.7b-q8g64`, a 32-second fixture. `m tui`, `m cli`,
+  `m dictate`, `m tune` and `m quantize` were **not** traced, so their hook call
   volumes are inferred from `run_session` being shared, not measured. A torch-backend run
   would show different `backends` internals.
 - **§1.3's static pass under-reports.** 1,147 call sites went unresolved. It resolves

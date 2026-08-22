@@ -26,7 +26,7 @@ import numpy as np
 from .vad import SAMPLE_RATE
 
 # Upstream weights. Any of these can be replaced with a local directory -- notably a
-# quantised one built by `lt quantize` -- so nothing here is a hard-coded destiny.
+# quantised one built by `m quantize` -- so nothing here is a hard-coded destiny.
 DEFAULT_ASR = "Qwen/Qwen3-ASR-1.7B"
 DEFAULT_ALIGNER = "Qwen/Qwen3-ForcedAligner-0.6B"
 
@@ -204,7 +204,7 @@ def local_checkpoints() -> list[Path]:
     """Every quantised checkpoint on disk, newest naming first.
 
     One definition of what counts -- a directory with a config.json -- shared by
-    `lt models` and by resolve_checkpoint's "Available:" message, so the two can't
+    `m models` and by resolve_checkpoint's "Available:" message, so the two can't
     disagree about what exists.
     """
     from . import paths
@@ -219,7 +219,7 @@ def resolve_checkpoint(ref: str) -> str:
     """Turn a --model/--aligner value into something loadable, or say why it isn't.
 
     Accepts, in order: an existing path; a name or path relative to the checkpoint
-    directory; a Hugging Face repo id. The middle case is the one that matters -- `lt
+    directory; a Hugging Face repo id. The middle case is the one that matters -- `m
     quantize` writes under XDG_CACHE_HOME, so `-M qwen3-asr-1.7b-q8g64` and the older
     `-M models/qwen3-asr-1.7b-q8g64` both have to find it without the caller typing an
     absolute path.
@@ -252,7 +252,7 @@ def resolve_checkpoint(ref: str) -> str:
         return ref
 
     known = [p.name for p in local_checkpoints()]
-    listing = ("\n  " + "\n  ".join(known)) if known else " (none yet -- run `lt quantize`)"
+    listing = ("\n  " + "\n  ".join(known)) if known else " (none yet -- run `m quantize`)"
     raise BackendUnavailable(
         f"no checkpoint {ref!r}: not a path, and not in {models}.\nAvailable:{listing}"
     )
@@ -709,7 +709,7 @@ class MlxBackend:
     bf16 is noise beside it. 8-bit is the default recommendation because upstream measures
     it at +0.04pp WER; 4-bit costs +0.43pp for another ~1.7x on long clips.
 
-    Build the checkpoints with `lt quantize`. Nothing here downloads a quantised model:
+    Build the checkpoints with `m quantize`. Nothing here downloads a quantised model:
     quantisation is a property of weights on disk, and `--model` points at them.
 
     Differences this adapter absorbs: `return_timestamps` vs `return_time_stamps`,
@@ -884,7 +884,7 @@ def load_backend(
 
     Not the same as passing timestamps=False per call: the aligner is a second set of
     weights, and a caller that will never ask for word timings should not pay to load
-    them. `lt dictate` is that caller -- it wants a string, not a transcript.
+    them. `m dictate` is that caller -- it wants a string, not a transcript.
     """
     if name not in BACKENDS:
         raise BackendUnavailable(

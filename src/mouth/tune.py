@@ -1,4 +1,4 @@
-"""`lt tune`: measure this machine and this voice, then pick settings from the numbers.
+"""`m tune`: measure this machine and this voice, then pick settings from the numbers.
 
 Every default in this tool is a measurement taken on one M3 Max against one speaker, and
 three of them are the difference between "near realtime" and "why is it dropping words":
@@ -294,7 +294,7 @@ def render(
 ) -> str:
     """The config file this tuning run implies, as text to show before it is written."""
     lines = [
-        "# mouth -- written by `lt tune`.",
+        "# mouth -- written by `m tune`.",
     ]
     if note:
         lines += [f"# {line}" for line in note.splitlines()]
@@ -320,7 +320,7 @@ def render(
     lines += [
         "",
         f"# How quickly text appears: {profile.name} -- {profile.blurb}.",
-        "# Bare keys, not a [tui] table: `lt cli` shows partials too, and `lt cadence`",
+        "# Bare keys, not a [tui] table: `m cli` shows partials too, and `m cadence`",
         "# exists to print what this schedule costs. Under [tui] they kept the shipped",
         "# schedule and said so confidently.",
         f"interim = {c.first:g}",
@@ -376,7 +376,7 @@ def measure(
 ) -> tuple[CostModel, CostModel]:
     """Time a transcription at a spread of prefix lengths, with and without the draft.
 
-    Here rather than in app.py so that the one part of `lt tune` doing the measuring is
+    Here rather than in app.py so that the one part of `m tune` doing the measuring is
     testable -- the module docstring promises the arithmetic lives on this side, and the
     benchmark loop was the piece that had drifted back into the front end.
 

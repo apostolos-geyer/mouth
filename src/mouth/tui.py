@@ -210,7 +210,7 @@ def build_tui(cfg, backend):
             # No `value=` here: Input's value is a Textual reactive, and setting one
             # fires a watcher that needs a running app. build_tui runs before the app
             # exists (loading spawns subprocesses, which Textual's stdout breaks), so
-            # `lt tui --context "..."` crashed on construction. Seeded in on_mount.
+            # `m tui --context "..."` crashed on construction. Seeded in on_mount.
             self.context = Input(
                 placeholder="names, jargon, spellings the model should expect",
                 id="context",

@@ -131,7 +131,7 @@ def main() -> int:
         # app() and not main(): main() ends in os._exit and would skip the report.
         from mouth.app import app
 
-        sys.argv = ["lt", *args]
+        sys.argv = ["m", *args]
         sys.setprofile(profiler)
         threading.setprofile(profiler)
         try:

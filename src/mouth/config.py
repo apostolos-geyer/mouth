@@ -9,7 +9,7 @@ inside the parser. There is no per-flag plumbing to forget and no "was this pass
 sentinel to get wrong, which is the failure mode of every hand-rolled version of this.
 
 A bare key reaches every command that has that option, which is almost all of them: a
-setting for "how this machine transcribes" is wrong for `lt tui` and right for `lt cli`
+setting for "how this machine transcribes" is wrong for `m tui` and right for `m cli`
 only by accident. The exceptions are named in EXCLUDED below and there are three, each
 one a command where a flag name means something else -- `--threshold` is an RMS gate to a
 session and a cosine distance to `diarize`, and a bare key reaching both would collapse
@@ -74,10 +74,10 @@ _TEMPLATE = """\
 # TOML rule worth knowing: bare keys must come before the first [table] or they
 # land inside it.
 
-# backend = "mlx"                   # torch | mlx            (`lt backends`)
-# model = "qwen3-asr-1.7b-q8g64"    # HF repo id, or a local checkpoint from `lt quantize`
-# language = "English"              # `lt languages`
-# mic = 2                           # `lt devices`
+# backend = "mlx"                   # torch | mlx            (`m backends`)
+# model = "qwen3-asr-1.7b-q8g64"    # HF repo id, or a local checkpoint from `m quantize`
+# language = "English"              # `m languages`
+# mic = 2                           # `m devices`
 # record = true                     # keep per-utterance audio + manifest
 # out = "~/Documents/transcripts"   # where transcripts land
 
@@ -182,7 +182,7 @@ def default_map(
             elsewhere = sorted(c for c, al in params.items() if name in al)
             if elsewhere:
                 raise ConfigError(
-                    f"{_flag(name)} belongs to `lt {elsewhere[0]}`, where it means "
+                    f"{_flag(name)} belongs to `m {elsewhere[0]}`, where it means "
                     f"something else ({EXCLUDED[elsewhere[0]]}). Put it under "
                     f"[{elsewhere[0]}] if that is what you meant."
                 )
@@ -210,7 +210,7 @@ def default_map(
 
 def template() -> str:
     """The starter config, with the command list filled in from SESSION."""
-    return _TEMPLATE.format(excluded=", ".join(f"lt {c}" for c in sorted(EXCLUDED)))
+    return _TEMPLATE.format(excluded=", ".join(f"m {c}" for c in sorted(EXCLUDED)))
 
 
 def write_template(path: Path) -> None:
@@ -226,7 +226,7 @@ def save(path: Path, text: str) -> Path | None:
 
     Returns where the previous one went, or None if there wasn't one.
 
-    Here rather than in the caller because this module owns the file: `lt tune --write`
+    Here rather than in the caller because this module owns the file: `m tune --write`
     was reaching past it to hardcode the location, the .bak rule and the mkdir, which is
     also how it came to ignore the --config path it had just been given.
     """

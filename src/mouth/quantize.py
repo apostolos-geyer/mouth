@@ -39,7 +39,7 @@ MODES = ("affine", "mxfp4", "mxfp8", "nvfp4")
 
 
 def default_out(model: str, bits: int, group_size: int, mode: str) -> Path:
-    """<cache>/models/<name>-q8g64 -- readable at a glance in `lt models`.
+    """<cache>/models/<name>-q8g64 -- readable at a glance in `m models`.
 
     Cache, not data: these are GBs and this command rebuilds any of them from the
     upstream weights, so losing the directory costs time rather than work.

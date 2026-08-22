@@ -13,7 +13,7 @@ behaviour without a code change.
     recordings   $XDG_DATA_HOME/mouth/recordings
     checkpoints  $XDG_CACHE_HOME/mouth/models         (~/.cache/...)
 
-Quantised checkpoints are cache, not data: they're GBs, and `lt quantize` rebuilds any of
+Quantised checkpoints are cache, not data: they're GBs, and `m quantize` rebuilds any of
 them from the upstream weights. Losing that directory costs time, not work.
 """
 
@@ -64,14 +64,14 @@ def record_dir() -> Path:
 
 
 def models_dir() -> Path:
-    """Where `lt quantize` writes, and where `lt models` looks."""
+    """Where `m quantize` writes, and where `m models` looks."""
     return cache_dir() / "models"
 
 
 def calibration_file() -> Path:
     """Remembered VAD thresholds, keyed by input device.
 
-    Cache, not data: it is a measurement of a room that `lt dictate --recalibrate`
+    Cache, not data: it is a measurement of a room that `m dictate --recalibrate`
     retakes in a second. It lives here because a per-launch calibration costs more than
     loading the model does, which is the whole reason dictation can start on a keypress.
     """
