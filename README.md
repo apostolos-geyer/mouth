@@ -106,6 +106,16 @@ provisional passes are the expensive half of a live session.
 `m cli --wav` still exists and still paces to the clock — that is for *watching* a replay,
 which is a different thing from wanting the transcript.
 
+For scripts, `--stem` names the outputs deterministically, and the path they were written
+to is echoed as one plain line on stderr (no markup, no ANSI) so a pipeline can find them
+without parsing the pretty output. An empty VAD result — silence, music, the wrong file —
+prints "Nothing transcribed." and exits nonzero:
+
+```sh
+m transcribe lecture.m4a --stem lecture-ep42
+# stderr's last line: <out>/lecture-ep42   → .txt .words.json .srt .timestamped.md
+```
+
 ```sh
 m transcribe interview.m4a --speakers      # or -n 2 if you know the count
 ```

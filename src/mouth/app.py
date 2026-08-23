@@ -215,6 +215,7 @@ def _config(
     stream_chunk,
     min_speech=MIN_SPEECH_SEC,
     context="",
+    session_id="",
 ) -> Config:
     """Validate CLI values and build a Config.
 
@@ -262,6 +263,7 @@ def _config(
         stream_chunk_sec=stream_chunk,
         min_speech=min_speech,
         context=context,
+        session_id=session_id,
     )
 
 
@@ -295,10 +297,13 @@ def _load(cfg: Config, out: Console = console, on_status=None, align: bool | Non
         raise typer.BadParameter(str(e)) from e
 
 
-def _report(cfg: Config, segments, words, recorder, turns=None):
+def _report(cfg: Config, segments, words, recorder, turns=None) -> Path | None:
+    """Write the artifacts and announce them. Returns the output stem path, or None
+    when there was nothing to write -- the file front end turns that into a nonzero
+    exit, so a script can tell an empty VAD result from a successful run."""
     if not segments:
         console.print("[yellow]Nothing transcribed.[/]")
-        return
+        return None
     # The session owns its name. Letting write_outputs invent one stamped it at a
     # different moment from the recorder's directory, so the two artifacts for one
     # session could not be matched up by name.
@@ -312,6 +317,7 @@ def _report(cfg: Config, segments, words, recorder, turns=None):
     )
     if recorder:
         console.print(f"[dim]recorded {recorder.n} utterances → {recorder.dir}[/]")
+    return base
 
 
 @app.command()
@@ -912,6 +918,11 @@ def transcribe(
         False, "--record/--no-record", help="Save per-utterance audio + manifest."
     ),
     record_dir: Path = RECDIR,
+    stem: str | None = typer.Option(
+        None,
+        "--stem",
+        help="Name for the output files [dim](default: session-timestamp)[/].",
+    ),
 ):
     """Transcribe a file, as fast as the machine can [dim](not in real time)[/].
 
@@ -946,6 +957,7 @@ def transcribe(
         stream_chunk=2.0,
         min_speech=min_speech,
         context=context,
+        session_id=stem or "",
     )
     cfg.realtime = False
     # A file arrives faster than the model consumes it, so the queue builds a backlog of
@@ -1058,7 +1070,14 @@ def transcribe(
     segments, words, recorder = result
     if by_block:
         words = _align_blocks(backend_obj, audio, segments, turns, cfg.language)
-    _report(cfg, segments, words, recorder, turns=turns)
+    base = _report(cfg, segments, words, recorder, turns=turns)
+    if base is None:
+        raise typer.Exit(1)
+    # One plain line on stderr: the path a script parses. No rich markup, no ANSI --
+    # the same contract as `m dictate`'s stdout, which carries the transcript and
+    # nothing else so "a state machine subscribes to stderr without disturbing that".
+    sys.stderr.write(f"{base}\n")
+    sys.stderr.flush()
 
 
 def _align_blocks(backend, audio, segments, turns, language: str):

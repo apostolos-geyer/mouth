@@ -963,60 +963,6 @@ wheels = [
 ]
 
 [[package]]
-name = "mouth"
-version = "0.3.0"
-source = { editable = "." }
-dependencies = [
-    { name = "numpy" },
-    { name = "qwen-asr" },
-    { name = "sounddevice" },
-    { name = "soundfile" },
-    { name = "textual" },
-    { name = "torch" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-diarize = [
-    { name = "coremltools" },
-    { name = "scipy" },
-]
-mlx = [
-    { name = "mlx-qwen3-asr" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pyrefly" },
-    { name = "pytest" },
-    { name = "ruff" },
-    { name = "ty" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "coremltools", marker = "extra == 'diarize'", specifier = ">=9.0" },
-    { name = "mlx-qwen3-asr", marker = "extra == 'mlx'", specifier = ">=0.3.5" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "qwen-asr", specifier = ">=0.0.6" },
-    { name = "scipy", marker = "extra == 'diarize'", specifier = ">=1.11" },
-    { name = "sounddevice", specifier = ">=0.5.1" },
-    { name = "soundfile", specifier = ">=0.13" },
-    { name = "textual", specifier = ">=1.0" },
-    { name = "torch", specifier = ">=2.13.0" },
-    { name = "typer", specifier = ">=0.15" },
-]
-provides-extras = ["mlx", "diarize"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pyrefly", specifier = ">=1.2.0" },
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "ruff", specifier = ">=0.16.4" },
-    { name = "ty", specifier = ">=0.0.73" },
-]
-
-[[package]]
 name = "markdown-it-py"
 version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1171,6 +1117,62 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3d/c2/b53450ad34ec4960bbb108701e8268e109c12b9888b101ea22f94897ffb5/mlx_qwen3_asr-0.3.5.tar.gz", hash = "sha256:3b2932a6cc5e162d8a686434ee0ea63e86a294c845451496729a6f0f6a0df050", size = 244181, upload-time = "2026-05-16T00:26:23.504Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7d/65/a450105650127e28c4467f834c8e71cdca422e62efa4161919bb1d94cd36/mlx_qwen3_asr-0.3.5-py3-none-any.whl", hash = "sha256:5c7169392a8d06f38ccc791b768cdc9e7fd6038a34130576c2af8b3afa28d06b", size = 168041, upload-time = "2026-05-16T00:26:21.879Z" },
+]
+
+[[package]]
+name = "mouth"
+version = "0.3.0"
+source = { editable = "." }
+dependencies = [
+    { name = "numpy" },
+    { name = "qwen-asr" },
+    { name = "rich" },
+    { name = "sounddevice" },
+    { name = "soundfile" },
+    { name = "textual" },
+    { name = "torch" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+diarize = [
+    { name = "coremltools" },
+    { name = "scipy" },
+]
+mlx = [
+    { name = "mlx-qwen3-asr" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pyrefly" },
+    { name = "pytest" },
+    { name = "ruff" },
+    { name = "ty" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "coremltools", marker = "extra == 'diarize'", specifier = ">=9.0" },
+    { name = "mlx-qwen3-asr", marker = "extra == 'mlx'", specifier = ">=0.3.5" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "qwen-asr", specifier = ">=0.0.6" },
+    { name = "rich", specifier = ">=13.0" },
+    { name = "scipy", marker = "extra == 'diarize'", specifier = ">=1.11" },
+    { name = "sounddevice", specifier = ">=0.5.1" },
+    { name = "soundfile", specifier = ">=0.13" },
+    { name = "textual", specifier = ">=1.0" },
+    { name = "torch", specifier = ">=2.13.0" },
+    { name = "typer", specifier = ">=0.15" },
+]
+provides-extras = ["mlx", "diarize"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pyrefly", specifier = ">=1.2.0" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "ruff", specifier = ">=0.16.4" },
+    { name = "ty", specifier = ">=0.0.73" },
 ]
 
 [[package]]

@@ -11,6 +11,9 @@ dependencies = [
     "soundfile>=0.13",
     "typer>=0.15",
     "textual>=1.0",
+    # Imported at module scope by app.py and tui.py. Arrived transitively through
+    # typer until declared here -- worked until it wouldn't.
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
