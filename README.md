@@ -5,6 +5,20 @@ Live local transcription with Qwen3-ASR + Qwen3-ForcedAligner, running on MPS.
 Adapted from the offline pipeline at `~/Desktop/school/spring-2026/tools/qwen-transcriber/`
 (built for the entrepreneur interview) to run against the microphone in real time.
 
+## Platforms
+
+Developed and tested on Apple Silicon. What to expect elsewhere:
+
+| | M-series Mac | Intel Mac | Linux/Windows |
+|---|---|---|---|
+| transcription, torch backend | ✓ (`mps`) | ✓ but CPU only — MPS needs Apple Silicon | ✓ (`--device cuda` untested, or `cpu`, slow) |
+| transcription, MLX backend | ✓ fast | ✗ | ✗ (mlx ships arm64-macOS wheels only) |
+| diarization (`--speakers`, `m diarize`) | ✓ | ✓ slow | ✗ — CoreML models; there is no other implementation |
+| live mic, TUI, quantize, tune | ✓ | ✓ | ✓ |
+
+The diarization row is the one that bites: speaker labels exist only through CoreML, so
+anything short of a Mac transcribes but cannot tell you who spoke.
+
 ## Install
 
 ```sh
