@@ -13,8 +13,7 @@ setting for "how this machine transcribes" is wrong for `m tui` and right for `m
 only by accident. The exceptions are named in EXCLUDED below and there are three, each
 one a command where a flag name means something else -- `--threshold` is an RMS gate to a
 session and a cosine distance to `diarize`, and a bare key reaching both would collapse
-every speaker into one. Those take a table named after the command: `--threshold` is an RMS gate to a session and a cosine distance to `diarize`,
-and a bare key that reached both would quietly ruin one of them.
+every speaker into one. Those take a table named after the command:
 
     backend = "mlx"
     model = "qwen3-asr-1.7b-q8g64"

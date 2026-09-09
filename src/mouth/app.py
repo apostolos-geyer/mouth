@@ -14,6 +14,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 from rich.markup import escape
+from typer.core import TyperGroup
 
 from . import config as cfgfile
 from . import paths
@@ -47,11 +48,65 @@ from .formats import fmt_clock, write_outputs
 from .vad import MAX_UTTERANCE_SEC, MIN_SPEECH_SEC, Cadence
 
 console = Console()
+
+#: Command groups, and the order they are met in. Definition order put `m devices` at the
+#: top of `m --help` and the four commands the tool exists for at the bottom, because
+#: typer renders panels in the order `list_commands` first mentions them.
+RUN, SETUP, LOOK = "Transcribe", "Set up", "Look up"
+_ORDER = (
+    # Transcribe: the jobs.
+    "tui",
+    "cli",
+    "dictate",
+    "transcribe",
+    "diarize",
+    # Set up: the three commands that write something.
+    "tune",
+    "config",
+    "quantize",
+    # Look up: read-only.
+    "devices",
+    "languages",
+    "backends",
+    "models",
+    "paths",
+    "cadence",
+)
+
+
+class _Group(TyperGroup):
+    def list_commands(self, ctx) -> list[str]:
+        """Listed order, with anything not yet placed falling to the end rather than
+        vanishing -- a new command should show up unsorted, not not at all."""
+        placed = [n for n in _ORDER if n in self.commands]
+        return placed + [n for n in self.commands if n not in _ORDER]
+
+
 app = typer.Typer(
+    cls=_Group,
     add_completion=False,
     no_args_is_help=True,
     rich_markup_mode="rich",
     help="Live local transcription with [b]Qwen3-ASR[/b] + forced alignment.",
+    epilog="New here? [b]m tune[/b] measures this machine and your voice and writes the "
+    "config the rest of these read. [dim]`m paths` says where things land.[/]",
+)
+
+
+def _version(value: bool):
+    if value:
+        from importlib.metadata import version
+
+        console.print(f"mouth {version('mouth')}")
+        raise typer.Exit()
+
+
+VERSION = typer.Option(
+    None,
+    "--version",
+    callback=_version,
+    is_eager=True,
+    help="Show the version and exit.",
 )
 
 CONFIG = typer.Option(
@@ -101,7 +156,11 @@ def _params(group) -> dict[str, dict[str, str]]:
 
 
 @app.callback()
-def _root(ctx: typer.Context, config: Path | None = CONFIG):
+def _root(
+    ctx: typer.Context,
+    config: Path | None = CONFIG,
+    version: bool = VERSION,
+):
     """Live local transcription with [b]Qwen3-ASR[/b] + forced alignment."""
     # The --config path, for the commands that need to know which file was meant. Only
     # that: `m config` re-reads and re-parses on purpose, because it has to survive a
@@ -123,40 +182,94 @@ def _root(ctx: typer.Context, config: Path | None = CONFIG):
     ctx.default_map = defaults
 
 
+# Option panels. Nineteen flags in one flat list is a wall; grouped, the four questions a
+# session actually asks (what audio, which model, how eagerly, where does it go) are
+# legible at a glance. Set on the shared OptionInfo, so every command that reuses a flag
+# files it in the same place.
+IN, ASR, LAT, OUTP = "Audio in", "Recognition", "Partials & latency", "Output"
+SPK = "Speakers"
+
+
 # Shared across the run commands; typer accepts the same OptionInfo in several signatures.
-OUT = typer.Option(paths.out_dir(), "--out", "-o", help="Where transcripts go.")
-LANG = typer.Option("English", "--language", "-l", help="ASR language hint.")
-DEVICE = typer.Option("mps", "--device", help="torch device [dim](torch backend only)[/].")
+OUT = typer.Option(
+    paths.out_dir(),
+    "--out",
+    "-o",
+    # No show_default: an XDG path is long enough that rich truncates it to an ellipsis
+    # in the help column, which tells the reader less than the pointer does.
+    help="Where transcripts go [dim](`m paths`)[/].",
+    show_default=False,
+    rich_help_panel=OUTP,
+)
+LANG = typer.Option(
+    "English", "--language", "-l", help="ASR language hint.", rich_help_panel=ASR
+)
+DEVICE = typer.Option(
+    "mps",
+    "--device",
+    help="torch device [dim](torch backend only)[/].",
+    rich_help_panel=ASR,
+)
 BACKEND = typer.Option(
-    "torch", "--backend", "-b", help="Inference backend: [b]torch[/b] or [b]mlx[/b]."
+    "torch",
+    "--backend",
+    "-b",
+    help="Inference backend: [b]torch[/b] or [b]mlx[/b].",
+    rich_help_panel=ASR,
 )
 MODEL = typer.Option(
     DEFAULT_ASR,
     "--model",
     "-M",
     help="ASR weights: a HF repo id or a local directory "
-    "[dim](e.g. one built by `m quantize`)[/].",
+    "[dim](e.g. one built by `m quantize`; `m models` lists them)[/].",
+    rich_help_panel=ASR,
 )
 ALIGNER = typer.Option(
     DEFAULT_ALIGNER,
     "--aligner",
     help="Forced-aligner weights: HF repo id or local directory.",
+    rich_help_panel=ASR,
 )
 DTYPE = typer.Option(
     "auto",
     "--dtype",
     help="Compute precision: [b]auto[/b], bf16, fp16 or fp32. "
     "[dim]auto = bf16 on torch, fp16 on mlx.[/]",
+    rich_help_panel=ASR,
 )
-MIC = typer.Option(None, "--mic", "-m", help="Input device index.")
-WAV = typer.Option(None, "--wav", help="Replay a 16kHz wav instead of the mic.")
-THRESH = typer.Option(None, "--threshold", "-t", help="RMS VAD threshold [dim](auto)[/].")
+MIC = typer.Option(
+    None,
+    "--mic",
+    "-m",
+    help="Input device index [dim](`m devices`)[/].",
+    rich_help_panel=IN,
+)
+WAV = typer.Option(
+    None,
+    "--wav",
+    metavar="FILE",
+    # Not "a 16kHz wav": --wav goes through the same PyAV decoder as `m diarize` and takes
+    # anything it reads. The old wording described a stricter loader that was itself the
+    # bug, and sent people to convert files that already worked.
+    help="Replay an audio file paced to the clock, as if it were the mic. "
+    "[dim]`m transcribe` is the same file at full speed.[/]",
+    rich_help_panel=IN,
+)
+THRESH = typer.Option(
+    None,
+    "--threshold",
+    "-t",
+    help="RMS VAD threshold [dim](auto: measured from the room)[/].",
+    rich_help_panel=IN,
+)
 CONTEXT = typer.Option(
     "",
     "--context",
     metavar="TEXT",
     help="Words to expect: names, jargon, spellings. "
     "[dim]The model biases decoding toward them.[/]",
+    rich_help_panel=ASR,
 )
 MINSPEECH = typer.Option(
     MIN_SPEECH_SEC,
@@ -164,15 +277,26 @@ MINSPEECH = typer.Option(
     help="Voiced audio an utterance needs to count at all. "
     '[dim]Lower for single words; a spoken "Claude" only '
     "just clears the default.[/]",
+    rich_help_panel=IN,
 )
 FIRST = typer.Option(
-    0.4, "--interim", help="When the first partial fires, and the floor between partials."
+    0.4,
+    "--interim",
+    help="When the first partial fires, and the floor between partials. "
+    "[dim]0 turns partials off.[/]",
+    rich_help_panel=LAT,
 )
 GROWTH = typer.Option(
-    1.6, "--growth", help="Partial spacing growth [dim](1.0 = fixed spacing)[/]."
+    1.6,
+    "--growth",
+    help="Partial spacing growth [dim](1.0 = fixed spacing)[/].",
+    rich_help_panel=LAT,
 )
 MAXGAP = typer.Option(
-    3.0, "--max-gap", help="Longest a partial may lag on a long utterance."
+    3.0,
+    "--max-gap",
+    help="Longest a partial may lag on a long utterance.",
+    rich_help_panel=LAT,
 )
 PARTIALS = typer.Option(
     "reencode",
@@ -182,16 +306,27 @@ PARTIALS = typer.Option(
     "a draft -- same text, far fewer passes; [i]experimental[/i]) or [b]stream[/b] "
     "(feed only new audio to a cached decoder; linear, appends). "
     "[dim]x-draft and stream need --backend mlx.[/]",
+    rich_help_panel=LAT,
 )
 CHUNKSEC = typer.Option(
     2.0,
     "--stream-chunk",
     help="Seconds of audio per streaming decode [dim](--partials stream)[/].",
+    rich_help_panel=LAT,
 )
 REC = typer.Option(
-    True, "--record/--no-record", help="Save per-utterance audio + manifest."
+    True,
+    "--record/--no-record",
+    help="Save per-utterance audio + manifest.",
+    rich_help_panel=OUTP,
 )
-RECDIR = typer.Option(paths.record_dir(), "--record-dir", help="Where recordings go.")
+RECDIR = typer.Option(
+    paths.record_dir(),
+    "--record-dir",
+    help="Where recordings go [dim](`m paths`)[/].",
+    show_default=False,
+    rich_help_panel=OUTP,
+)
 
 
 def _config(
@@ -320,7 +455,7 @@ def _report(cfg: Config, segments, words, recorder, turns=None) -> Path | None:
     return base
 
 
-@app.command()
+@app.command(rich_help_panel=LOOK)
 def devices():
     """List available microphones."""
     import sounddevice as sd
@@ -332,13 +467,13 @@ def devices():
             )
 
 
-@app.command()
+@app.command(rich_help_panel=LOOK)
 def languages():
     """List supported ASR languages."""
     console.print(", ".join(LANGUAGES))
 
 
-@app.command()
+@app.command(rich_help_panel=LOOK)
 def backends():
     """List inference backends and whether their dependencies are installed."""
     for name in BACKENDS:
@@ -350,7 +485,7 @@ def backends():
         )
 
 
-@app.command()
+@app.command(rich_help_panel=LOOK)
 def models(
     model_dir: Path = typer.Option(
         paths.models_dir(), "--dir", help="Where local checkpoints live."
@@ -382,7 +517,7 @@ def models(
         console.print(f"  [cyan]{p.name}[/]  [dim]{tag} · {qz.size_gb(p):.2f} GB[/]")
 
 
-@app.command()
+@app.command(rich_help_panel=SETUP)
 def quantize(
     model: str = typer.Argument(
         DEFAULT_ASR, help="Source weights: HF repo id or directory."
@@ -435,10 +570,10 @@ def quantize(
     )
 
 
-@app.command()
+@app.command(rich_help_panel=RUN)
 def diarize(
     audio_file: Path = typer.Argument(
-        ..., help="Audio to diarize (wav, flac, m4a, mp3, mp4)."
+        ..., metavar="FILE", help="Audio to diarize (wav, flac, m4a, mp3, mp4)."
     ),
     out: Path | None = typer.Option(
         None, "--out", "-o", help="Write RTTM here [dim](default: stdout only)[/]."
@@ -446,8 +581,16 @@ def diarize(
     num_speakers: int | None = typer.Option(
         None, "--speakers", "-n", help="Exact speaker count, if known."
     ),
-    min_speakers: int = typer.Option(_DIA.min_speakers, "--min-speakers"),
-    max_speakers: int = typer.Option(_DIA.max_speakers, "--max-speakers"),
+    min_speakers: int = typer.Option(
+        _DIA.min_speakers,
+        "--min-speakers",
+        help="Fewest speakers to consider [dim](ignored with --speakers)[/].",
+    ),
+    max_speakers: int = typer.Option(
+        _DIA.max_speakers,
+        "--max-speakers",
+        help="Most speakers to consider [dim](ignored with --speakers)[/].",
+    ),
     threshold: float = typer.Option(
         _DIA.threshold,
         "--threshold",
@@ -539,7 +682,7 @@ def diarize(
         )
 
 
-@app.command("paths")
+@app.command("paths", rich_help_panel=LOOK)
 def paths_():
     """Show where config, transcripts, recordings and checkpoints are kept."""
     rows = [
@@ -559,7 +702,7 @@ def paths_():
     )
 
 
-@app.command("config")
+@app.command("config", rich_help_panel=SETUP)
 def config_(
     ctx: typer.Context,
     init: bool = typer.Option(False, "--init", help="Write a starter config file."),
@@ -637,7 +780,7 @@ def _shown(prm, value) -> str:
     return next((o for o in prm.secondary_opts if o.startswith("--")), f"{opt} off")
 
 
-@app.command()
+@app.command(rich_help_panel=SETUP)
 def tune(
     ctx: typer.Context,
     wav: Path | None = typer.Option(
@@ -890,39 +1033,48 @@ def _tune_measure(cfg, backend_obj, samples):
     return drafted, full, drafter is not None
 
 
-@app.command()
+@app.command(rich_help_panel=RUN)
 def transcribe(
     audio_file: Path = typer.Argument(
-        ..., help="Audio to transcribe (wav, flac, m4a, mp3, mp4)."
+        ..., metavar="FILE", help="Audio to transcribe (wav, flac, m4a, mp3, mp4)."
     ),
-    out: Path = OUT,
+    threshold: float | None = THRESH,
+    min_speech: float = MINSPEECH,
     language: str = LANG,
     context: str = CONTEXT,
-    device: str = DEVICE,
     backend: str = BACKEND,
     model: str = MODEL,
     aligner: str = ALIGNER,
     dtype: str = DTYPE,
-    threshold: float | None = THRESH,
-    min_speech: float = MINSPEECH,
+    device: str = DEVICE,
     speakers: bool = typer.Option(
-        False, "--speakers", help="Also work out who spoke when, and label the transcript."
+        False,
+        "--speakers",
+        help="Also work out who spoke when, and label the transcript.",
+        rich_help_panel=SPK,
     ),
     num_speakers: int | None = typer.Option(
         None,
         "--num-speakers",
         "-n",
         help="Exact speaker count, if you know it [dim](implies --speakers)[/].",
+        rich_help_panel=SPK,
     ),
-    record: bool = typer.Option(
-        False, "--record/--no-record", help="Save per-utterance audio + manifest."
-    ),
-    record_dir: Path = RECDIR,
+    out: Path = OUT,
     stem: str | None = typer.Option(
         None,
         "--stem",
-        help="Name for the output files [dim](default: session-timestamp)[/].",
+        help="Name for the output files [dim](default: session-timestamp)[/]. "
+        "[dim]The stem path is echoed unmarked on stderr, for scripts.[/]",
+        rich_help_panel=OUTP,
     ),
+    record: bool = typer.Option(
+        False,
+        "--record/--no-record",
+        help="Save per-utterance audio + manifest.",
+        rich_help_panel=OUTP,
+    ),
+    record_dir: Path = RECDIR,
 ):
     """Transcribe a file, as fast as the machine can [dim](not in real time)[/].
 
@@ -1144,7 +1296,7 @@ def _diarize_audio(audio, num_speakers: int | None):
     return turns
 
 
-@app.command()
+@app.command(rich_help_panel=LOOK)
 def cadence(
     length: float = typer.Argument(20.0, help="Utterance length to simulate, in seconds."),
     first: float = FIRST,
@@ -1169,27 +1321,29 @@ def cadence(
     )
 
 
-@app.command()
+@app.command(rich_help_panel=RUN)
 def tui(
-    out: Path = OUT,
-    language: str = LANG,
-    device: str = DEVICE,
+    # Signature order is help order -- panels print in the order the signature first
+    # mentions them -- so these run: what audio, which model, how eagerly, where to.
     mic: int | None = MIC,
     wav: Path | None = WAV,
     threshold: float | None = THRESH,
-    first: float = FIRST,
-    growth: float = GROWTH,
-    max_gap: float = MAXGAP,
-    record: bool = REC,
-    record_dir: Path = RECDIR,
+    min_speech: float = MINSPEECH,
+    language: str = LANG,
+    context: str = CONTEXT,
     backend: str = BACKEND,
     model: str = MODEL,
     aligner: str = ALIGNER,
     dtype: str = DTYPE,
+    device: str = DEVICE,
+    first: float = FIRST,
+    growth: float = GROWTH,
+    max_gap: float = MAXGAP,
     partials: str = PARTIALS,
     stream_chunk: float = CHUNKSEC,
-    min_speech: float = MINSPEECH,
-    context: str = CONTEXT,
+    out: Path = OUT,
+    record: bool = REC,
+    record_dir: Path = RECDIR,
 ):
     """Full-screen live view [dim](q quit · p pause · c clear)[/]."""
     from .tui import build_tui
@@ -1225,27 +1379,29 @@ def tui(
     # Textual's pool thread.
 
 
-@app.command()
+@app.command(rich_help_panel=RUN)
 def cli(
-    out: Path = OUT,
-    language: str = LANG,
-    device: str = DEVICE,
+    # Signature order is help order -- panels print in the order the signature first
+    # mentions them -- so these run: what audio, which model, how eagerly, where to.
     mic: int | None = MIC,
     wav: Path | None = WAV,
     threshold: float | None = THRESH,
-    first: float = FIRST,
-    growth: float = GROWTH,
-    max_gap: float = MAXGAP,
-    record: bool = REC,
-    record_dir: Path = RECDIR,
+    min_speech: float = MINSPEECH,
+    language: str = LANG,
+    context: str = CONTEXT,
     backend: str = BACKEND,
     model: str = MODEL,
     aligner: str = ALIGNER,
     dtype: str = DTYPE,
+    device: str = DEVICE,
+    first: float = FIRST,
+    growth: float = GROWTH,
+    max_gap: float = MAXGAP,
     partials: str = PARTIALS,
     stream_chunk: float = CHUNKSEC,
-    min_speech: float = MINSPEECH,
-    context: str = CONTEXT,
+    out: Path = OUT,
+    record: bool = REC,
+    record_dir: Path = RECDIR,
 ):
     """Stream transcriptions to stdout [dim](Ctrl-C to stop)[/]."""
     from rich.live import Live
@@ -1322,34 +1478,48 @@ def cli(
 
 # ------------------------------------------------------------------ dictate
 
+#: The one question `m tui` never has to ask: dictation is a single turn, so something
+#: has to decide it is over.
+ENDS = "When it ends"
+
 WAIT = typer.Option(
     8.0,
     "--wait",
     help="Give up if speech hasn't started within this many seconds "
     "[dim](0 = wait forever)[/].",
+    rich_help_panel=ENDS,
 )
 EVENTS = typer.Option(
-    False, "--events", help="Emit JSON lines on stderr: levels, state, text."
+    False,
+    "--events",
+    help="Emit JSON lines on stderr: levels, state, text.",
+    rich_help_panel=OUTP,
 )
 RECAL = typer.Option(
     False,
     "--recalibrate",
     help="Re-measure the room instead of reusing the cached threshold.",
+    rich_help_panel=IN,
 )
 DICT_REC = typer.Option(
-    False, "--record/--no-record", help="Save the utterance's audio + manifest."
+    False,
+    "--record/--no-record",
+    help="Save the utterance's audio + manifest.",
+    rich_help_panel=OUTP,
 )
 DICT_FIRST = typer.Option(
     0.0,
     "--interim",
     help="Emit provisional text this many seconds in "
     "[dim](0 = off; only useful with --events)[/].",
+    rich_help_panel=OUTP,
 )
 HOLD = typer.Option(
     False,
     "--hold",
     help="Keep listening through pauses until signalled, instead of "
     "stopping at the first one. [dim]For hold-to-talk.[/]",
+    rich_help_panel=ENDS,
 )
 
 
@@ -1371,25 +1541,25 @@ class _Events:
         sys.stderr.flush()
 
 
-@app.command()
+@app.command(rich_help_panel=RUN)
 def dictate(
-    language: str = LANG,
     mic: int | None = MIC,
     wav: Path | None = WAV,
     threshold: float | None = THRESH,
     recalibrate: bool = RECAL,
-    wait: float = WAIT,
-    events: bool = EVENTS,
-    interim: float = DICT_FIRST,
-    hold: bool = HOLD,
-    record: bool = DICT_REC,
-    record_dir: Path = RECDIR,
+    min_speech: float = MINSPEECH,
+    language: str = LANG,
+    context: str = CONTEXT,
     backend: str = BACKEND,
     model: str = MODEL,
     dtype: str = DTYPE,
     device: str = DEVICE,
-    min_speech: float = MINSPEECH,
-    context: str = CONTEXT,
+    hold: bool = HOLD,
+    wait: float = WAIT,
+    events: bool = EVENTS,
+    interim: float = DICT_FIRST,
+    record: bool = DICT_REC,
+    record_dir: Path = RECDIR,
 ):
     """Speech to stdout, then exit. [dim]A surface to compose on.[/]
 
