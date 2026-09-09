@@ -1027,6 +1027,81 @@ def test_dictate_events_carry_what_a_meter_needs(tmp_path):
     assert next(e for e in events if e["event"] == "final")["text"] == "hello there"
 
 
+def _live(tmp_path, spec, *args):
+    """Run `m live --wav` in a child with the model seam stubbed out.
+
+    A child process rather than CliRunner because the thing under test *is* the split
+    between two real file descriptors, and a runner that captures them into one buffer
+    cannot see it.
+    """
+    import subprocess
+    import textwrap
+
+    import soundfile as sf
+
+    wav = tmp_path / "in.wav"
+    sf.write(wav, np.concatenate(frames(spec)), SAMPLE_RATE)
+
+    child = tmp_path / "child.py"
+    child.write_text(
+        textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(Path(__file__).parent.parent / "src")!r})
+        import mouth.app as m
+        from mouth.backends import Transcription
+
+        class Fake:
+            name = detail = "fake"
+            def transcribe(self, audio, sample_rate, *, language, timestamps):
+                return Transcription(text="hello there")
+
+        m._load = lambda *a, **k: Fake()
+        sys.argv = ["m", "live", "--wav", {str(wav)!r}, "--no-record",
+                    "-o", {str(tmp_path / "out")!r}, *{list(args)!r}]
+        m.main()
+    """)
+    )
+    env = {**os.environ, "XDG_CONFIG_HOME": str(tmp_path / "config")}
+    return subprocess.run(
+        [sys.executable, str(child)], capture_output=True, timeout=180, env=env, check=False
+    )
+
+
+def test_live_plain_puts_only_the_text_on_stdout(tmp_path):
+    """The point of the flag. Everything that is not an utterance -- the load status, the
+    measured threshold, the closing summary -- is commentary, and commentary in the middle
+    of `m live --plain | tee -a notes.md` lands in the notes."""
+    proc = _live(tmp_path, [(False, 1.2), (True, 1.0), (False, 1.0)], "--plain")
+
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert proc.stdout == b"hello there\n"
+    # And the commentary did not simply vanish -- it moved.
+    assert b"VAD threshold" in proc.stderr and b"utterances" in proc.stderr
+
+
+def test_live_plain_leaves_no_markup_or_wrapping_in_the_text(tmp_path):
+    """Written straight to the fd, not through rich: a console would hard-wrap the line
+    to a terminal width the consumer does not have, and read `[00:04]` in a transcript as
+    markup rather than as something somebody said."""
+    proc = _live(tmp_path, [(False, 1.2), (True, 1.0), (False, 1.0)], "--plain")
+
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert b"\x1b[" not in proc.stdout, "no ANSI"
+    assert proc.stdout.count(b"\n") == 1, "one line per utterance, unwrapped"
+
+
+def test_live_rich_is_the_default_and_keeps_its_decoration(tmp_path):
+    """The flag adds a mode; it does not quietly take the old one away. --rich prints the
+    clock and what the utterance cost, on stdout, the way it always did."""
+    proc = _live(tmp_path, [(False, 1.2), (True, 1.0), (False, 1.0)])
+
+    assert proc.returncode == 0, proc.stderr.decode()
+    assert b"hello there" in proc.stdout
+    assert b"00:0" in proc.stdout, "the clock"
+    assert b"VAD threshold" in proc.stdout, "commentary stays on stdout under --rich"
+    assert proc.stderr == b""
+
+
 def test_dictate_hold_keeps_going_through_pauses(tmp_path):
     """Hold-to-talk: a pause mid-thought is not the end of the dictation.
 
@@ -1080,25 +1155,6 @@ def test_bare_keys_reach_every_command_with_the_option():
     m = _map('backend = "mlx"\nlanguage = "Greek"\n')
     assert {"tui", "live", "dictate", "tune", "transcribe"} <= set(m)
     assert all(v == {"backend": "mlx", "language": "Greek"} for v in m.values())
-
-
-def test_the_old_command_name_still_reaches_the_command():
-    """`m cli` became `m live`. A config file written before that has a [cli] table in
-    it, and the setting is unambiguous -- erroring on it would teach nothing."""
-    assert _map('[cli]\npartials = "stream"\n') == {"live": {"partials": "stream"}}
-
-
-def test_an_alias_does_not_get_its_own_section():
-    """One command, one entry: bare keys must not land under both names, or `m config`
-    reports the same setting twice and they could drift apart."""
-    m = _map('backend = "mlx"\n')
-    assert "cli" not in m and "live" in m
-
-
-def test_a_still_unknown_section_is_still_an_error():
-    """The alias table is a fixed two-name map, not a general shrug at bad sections."""
-    with pytest.raises(cfgfile.ConfigError, match=r"\[nope\] is not a command"):
-        _map('[nope]\nbackend = "mlx"\n')
 
 
 def test_a_new_command_inherits_settings_without_being_listed():

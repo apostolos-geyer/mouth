@@ -75,18 +75,6 @@ _ORDER = (
 
 
 class _Group(TyperGroup):
-    def resolve_command(self, ctx, args):
-        """Canonicalise an old command name before click sees it.
-
-        Rewriting args rather than overriding get_command on purpose: click's
-        resolve_command returns the name *as typed*, and that string is the key it looks
-        `ctx.default_map` up under. Resolve the alias any later and `m cli` silently
-        stops reading the config file that `m live` reads.
-        """
-        if args and args[0] in cfgfile.ALIASES:
-            args = [cfgfile.ALIASES[args[0]], *args[1:]]
-        return super().resolve_command(ctx, args)
-
     def list_commands(self, ctx) -> list[str]:
         """Listed order, with anything not yet placed falling to the end rather than
         vanishing -- a new command should show up unsorted, not not at all."""
@@ -326,6 +314,14 @@ CHUNKSEC = typer.Option(
     help="Seconds of audio per streaming decode [dim](--partials stream)[/].",
     rich_help_panel=LAT,
 )
+PLAIN = typer.Option(
+    False,
+    "--plain/--rich",
+    help="Just the text, one line per utterance, nothing else on stdout. "
+    "[dim]Everything else -- status, clock, timings, the summary -- moves to stderr, "
+    "so the stream pipes.[/]",
+    rich_help_panel=OUTP,
+)
 REC = typer.Option(
     True,
     "--record/--no-record",
@@ -444,12 +440,17 @@ def _load(cfg: Config, out: Console = console, on_status=None, align: bool | Non
         raise typer.BadParameter(str(e)) from e
 
 
-def _report(cfg: Config, segments, words, recorder, turns=None) -> Path | None:
+def _report(
+    cfg: Config, segments, words, recorder, turns=None, out: Console = console
+) -> Path | None:
     """Write the artifacts and announce them. Returns the output stem path, or None
     when there was nothing to write -- the file front end turns that into a nonzero
-    exit, so a script can tell an empty VAD result from a successful run."""
+    exit, so a script can tell an empty VAD result from a successful run.
+
+    `out` because this is an announcement, not a result: `m live --plain` has to keep it
+    off the stdout its caller is reading utterances from."""
     if not segments:
-        console.print("[yellow]Nothing transcribed.[/]")
+        out.print("[yellow]Nothing transcribed.[/]")
         return None
     # The session owns its name. Letting write_outputs invent one stamped it at a
     # different moment from the recorder's directory, so the two artifacts for one
@@ -458,12 +459,12 @@ def _report(cfg: Config, segments, words, recorder, turns=None) -> Path | None:
     kinds = "txt,words.json,srt,timestamped.md"
     if turns:
         kinds += ",rttm,speakers.json,speakers.md"
-    console.print(
+    out.print(
         f"\n[green]{len(segments)}[/] utterances, [green]{len(words)}[/] timed words"
         f" → [b]{base}[/b].{{{kinds}}}"
     )
     if recorder:
-        console.print(f"[dim]recorded {recorder.n} utterances → {recorder.dir}[/]")
+        out.print(f"[dim]recorded {recorder.n} utterances → {recorder.dir}[/]")
     return base
 
 
@@ -1412,10 +1413,21 @@ def live(
     partials: str = PARTIALS,
     stream_chunk: float = CHUNKSEC,
     out: Path = OUT,
+    plain: bool = PLAIN,
     record: bool = REC,
     record_dir: Path = RECDIR,
 ):
-    """Stream transcriptions to stdout [dim](Ctrl-C to stop)[/]."""
+    """Stream transcriptions to stdout [dim](Ctrl-C to stop)[/].
+
+    Two shapes, chosen with a flag rather than guessed from whether stdout is a terminal:
+
+    [b]--rich[/b] (default) — a clock, the text, and what each utterance cost, with
+    provisional text rewriting itself in place above the line. For watching.
+
+    [b]--plain[/b] — the text and nothing else, a line per utterance, flushed as it
+    lands. Status, errors and the closing summary go to stderr instead of stdout, so
+    [b]m live --plain | tee -a notes.md[/b] pipes the way `m dictate` does.
+    """
     from rich.live import Live
     from rich.text import Text
 
@@ -1441,19 +1453,23 @@ def live(
         context=context,
     )
 
+    # Everything that is not an utterance. Under --plain that is stderr, which is what
+    # makes stdout a stream of text; under --rich it is the same console as the text, so
+    # the Live region below can still keep its place among it.
+    side = Console(stderr=True) if plain else console
     # Provisional text rewrites itself in place, which needs a terminal that can take the
-    # line back. Piped to a file, finals-only keeps the output clean.
-    show_interim = sys.stdout.isatty() and cfg.cadence is not None
+    # line back -- and a pipe, by definition, cannot.
+    show_interim = not plain and sys.stdout.isatty() and cfg.cadence is not None
     # transient: the provisional line is scratch space, so leave nothing behind.
     region = Live(Text(""), console=console, refresh_per_second=12, transient=True)
 
     class Hooks:
         def status(self, msg):
-            console.print(f"[dim]{msg}…[/]", highlight=False)
+            side.print(f"[dim]{msg}…[/]", highlight=False)
 
         def ready(self, threshold):
-            console.print(f"[dim]VAD threshold {threshold:.5f}[/]")
-            console.print("[b]Listening.[/] Ctrl-C to stop.\n")
+            side.print(f"[dim]VAD threshold {threshold:.5f}[/]")
+            side.print("[b]Listening.[/] Ctrl-C to stop.\n")
 
         def bind_stop(self, stop):
             # Flip a flag rather than raising, so an in-progress utterance still flushes.
@@ -1467,6 +1483,14 @@ def live(
                 region.update(Text(f"… {seg.text}", style="dim italic"))
 
         def segment(self, seg):
+            if plain:
+                # Not console.print: rich would wrap the line to the terminal width and
+                # interpret anything square-bracketed in the transcript as markup. A
+                # consumer reading line by line wants the utterance back verbatim, and
+                # wants it now rather than at the next buffer flush.
+                sys.stdout.write(f"{seg.text}\n")
+                sys.stdout.flush()
+                return
             # Live keeps its region at the bottom, so console.print lands above it.
             region.update(Text(""))
             console.print(
@@ -1477,15 +1501,15 @@ def live(
 
         def error(self, offset, msg):
             region.update(Text(""))
-            console.print(f"[red]{fmt_clock(offset)}  transcribe failed: {msg}[/]")
+            side.print(f"[red]{fmt_clock(offset)}  transcribe failed: {msg}[/]")
 
     # Load before the Live region starts: loading writes its own progress bars, and two
     # things driving the cursor at once garbles both.
-    backend_obj = _load(cfg)
+    backend_obj = _load(cfg, out=side)
 
     with region if show_interim else contextlib.nullcontext():
         result = run_session(cfg, Hooks(), backend=backend_obj)
-    _report(cfg, *result)
+    _report(cfg, *result, out=side)
 
 
 # ------------------------------------------------------------------ dictate

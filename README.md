@@ -56,6 +56,7 @@ uv run m tui           # the package is `mouth`; the command is `m`
 ```sh
 m tui                    # full-screen live view (q quit · p pause · c clear)
 m live                   # streaming output to stdout
+m live --plain           # ...just the text, for a pipe
 m dictate                # speech to stdout, then exit (--hold for hold-to-talk)
 m transcribe FILE        # a file, as fast as the machine can (~17x realtime)
 m transcribe FILE --speakers   # ...and label who said what
@@ -78,9 +79,6 @@ m live --no-record       # don't save audio
 
 m dictate -b mlx -M qwen3-asr-1.7b-q8g64 | pbcopy    # same --backend/--model as anywhere
 ```
-
-`m live` was `m cli`, which was a strange name for a subcommand of a CLI. The old name
-still works, silently, and so does a `[cli]` table in a config file.
 
 First run downloads ~5GB of weights. After that, time-to-ready is a property of the
 backend rather than the size of the checkpoint: torch takes 6-10s depending on whether
@@ -466,6 +464,24 @@ torch does **~10-15x realtime** for clips of 2s and up (0.19s for 2s, 0.57s for 
 2.07s for 32s), so a 30s utterance's ~193s of scheduled audio is about 16s of compute —
 roughly half realtime, and comfortable. Measure this on a clip of 2s or longer: below
 that, fixed per-call overhead dominates and throughput reads several times too low.
+
+## Piping a live session
+
+`m live` prints a clock, the text, and what each utterance cost, with provisional text
+rewriting itself in place above the line. That is a display, and a display in a pipe is
+noise — so the shape is a flag rather than a guess about whether stdout is a terminal:
+
+```sh
+m live --plain | tee -a ~/notes.md
+```
+
+`--plain` puts one utterance per line on stdout and nothing else, written straight to the
+descriptor rather than through rich: no ANSI, no wrapping to a width the reader doesn't
+have, and no chance of `[00:04]` in a transcript being read as markup. Status, the
+measured threshold, errors and the closing summary move to stderr. Partials are off,
+since rewriting a line is exactly what a pipe cannot do.
+
+`--rich` is the default and is unchanged.
 
 ## Dictation
 

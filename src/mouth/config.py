@@ -99,16 +99,6 @@ _TEMPLATE = """\
 #: teaches nothing -- the option did exist, and the setting still does.
 RENAMED = {"x_partial_draft": 'partials = "x-draft"'}
 
-#: Command names that used to be, and are. `m cli` was a strange name for a subcommand of
-#: a CLI; everything about it is live, so it is `m live`. The old name still resolves --
-#: silently, both here and on the command line, because a rename that costs a person their
-#: muscle memory and their scripts is a rename for the author's benefit.
-#:
-#: Here as well as in app.py because a [cli] table in a config file has to keep reaching
-#: the same command. Erroring on it would be technically defensible and useless: the
-#: setting is unambiguous and the file is one nobody reads twice.
-ALIASES = {"cli": "live"}
-
 
 class ConfigError(Exception):
     """A config file that exists but can't be honoured. Always names the file."""
@@ -206,17 +196,14 @@ def default_map(
                 out.setdefault(cmd, {})[alias[name]] = _value(value)
 
     for cmd, table in tables.items():
-        # `cmd` stays the name as written, so an error quotes the section the reader can
-        # actually find in their file; `target` is where it lands.
-        target = ALIASES.get(cmd, cmd)
-        alias = params.get(target)
+        alias = params.get(cmd)
         if alias is None:
             raise ConfigError(f"[{cmd}] is not a command.{_suggest(cmd, params, fmt=str)}")
         for key, value in table.items():
             name = _norm(key)
             if name not in alias:
                 raise ConfigError(f"[{cmd}] has no {_flag(name)}.{_suggest(key, alias)}")
-            out.setdefault(target, {})[alias[name]] = _value(value)
+            out.setdefault(cmd, {})[alias[name]] = _value(value)
     return out
 
 
