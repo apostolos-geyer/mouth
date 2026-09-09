@@ -2,8 +2,10 @@
 
 Live local transcription with Qwen3-ASR + Qwen3-ForcedAligner, running on MPS.
 
-Adapted from the offline pipeline at `~/Desktop/school/spring-2026/tools/qwen-transcriber/`
-(built for the entrepreneur interview) to run against the microphone in real time.
+Everything runs on the machine in front of you: no API, no upload, no account. It started
+as a batch transcriber for recordings and grew a microphone, which is why the file path
+(`m transcribe`) and the live path (`m tui`, `m live`, `m dictate`) share a VAD, a model
+and an output format rather than being two tools.
 
 ## Platforms
 
@@ -145,17 +147,21 @@ Not, not super at at liberty. But I'll tell you about it.
 Okay.
 ```
 
-Checked against a 28-minute 3-speaker interview with a hand-corrected reference
-transcript: **6520 words against the reference's 6400**, 3 speakers found unprompted, 16x
-realtime for the transcription and 67x for the diarization.
+Numbers below come from one **28-minute 3-speaker recording with a hand-corrected
+reference transcript**. It is private and not in this repo, so treat those as evidence
+rather than something to reproduce — `tests/fixtures/interview-excerpt.flac` is the
+32-second excerpt that ships, and it is what the tests measure against.
+
+On that recording: **6520 words against the reference's 6400**, 3 speakers found
+unprompted, 16x realtime for the transcription and 67x for the diarization.
 
 Getting there found two bugs worth naming, because both failed silently:
 
 - **The drain gave up.** A file arrives faster than the model consumes it, so the queue
   builds a backlog. `shutdown_timeout` is 2s — sized for quitting a live session, where one
-  abandoned utterance sits among many — and it truncated the interview to **826 words**.
+  abandoned utterance sits among many — and it truncated the recording to **826 words**.
 - **Calibration assumed the recording starts quiet.** The threshold is 3x the noise floor,
-  and the floor was measured as the median of the first second. This interview had its
+  and the floor was measured as the median of the first second. That recording had its
   pauses edited out, so it opens on speech: 0.146 against a real floor of 0.004, and 36%
   of the words never reached the model. A file can look at all of itself before deciding,
   so it now takes a low percentile of the whole recording. Mic audio is unaffected — on a
@@ -168,7 +174,7 @@ re-analyse it, and leave you pasting a generated filename between two commands.
 segmenter. Silence is the only boundary a VAD can find on its own, which is enough for a
 microphone and not enough for a recording someone edited the pauses out of — with no
 silence to close on, utterances run to the 30s cap and each one holds several people
-talking. On the interview above: 58 utterances before, **117 after**, 24 speaker blocks
+talking. On the 28-minute recording: 58 utterances before, **117 after**, 24 speaker blocks
 before, **69 after**, and the same word count, because cuts move boundaries rather than
 dropping audio. What was one two-minute block attributed to whoever held most of it is now
 the conversation it actually was:
@@ -190,11 +196,11 @@ the audio to it, rather than reading it twice.
 **Word timings then come from aligning each block once**, rather than each utterance as it
 lands. A block is one voice over a contiguous span, so it aligns as a single piece: word
 timings run continuously across it, and every word carries that speaker because of where
-it was aligned rather than by matching timings against turns afterwards. On the interview,
-that took unattributed words from **406 of 6505 (6.2%) to zero**.
+it was aligned rather than by matching timings against turns afterwards. There, that took
+unattributed words from **406 of 6505 (6.2%) to zero**.
 
 Timings are absolute against the full recording, which is the point if you are scrubbing a
-timeline or popping words up over video. Checked on the 28-minute interview: 6505 words
+timeline or popping words up over video. Checked on the same recording: 6505 words
 spanning 0.00s–1680.33s of a 1680s file, monotonic, none inverted or out of range. Against
 the reference SRT's own timings, 145 uniquely-matched words land a median +1.38s from
 their cue's start — which is what correct looks like, since a cue there averages 3.03s and
@@ -208,7 +214,7 @@ information the next tool needs. The `.srt` here is a convenience, not the sourc
 truth.
 
 Two properties of those timings worth knowing before you build on them, measured over the
-28-minute interview:
+same 28 minutes:
 
 - **Within a block the aligner tiles.** 5418 of 6504 neighbouring words touch exactly —
   one word's end is the next one's start. Real pauses show up between blocks, not inside
@@ -244,8 +250,8 @@ Qwen3-ASR biases decoding toward words you tell it to expect: names, jargon, spe
 It's a session setting rather than a per-utterance argument, and it's mutable, so the TUI
 can edit it while running — `k` opens the field, and the next utterance uses it.
 
-Off the `Backend` protocol (which stays one method wide) and onto a `Biasable` capability
-protocol, alongside `Streaming` and `Drafting`.
+Biasing is a `Biasable` capability protocol rather than a method on `Backend`, which stays
+one method wide — same pattern as `Streaming` and `Drafting`. See [Backends](#backends).
 
 ## Config
 
@@ -269,7 +275,7 @@ hold = true
 record = false
 
 [diarize]
-threshold = 0.7
+voice-distance = 0.7
 ```
 
 Nothing in it is a new setting: every key is an existing flag, and the file only changes
@@ -333,14 +339,9 @@ src/mouth/
     offline.py     segment -> embed -> cluster, whole recording at once
   tui.py         Textual front end
   app.py         typer entrypoint
-pocs/
-  live.py        v1 — minimal, argparse, transcribes at pauses only
-  live2.py       v2 — typer + Textual, fixed-cadence partials
-tests/           CPU-only: VAD, cadence, recorder, formats
+tests/           CPU-only: VAD, cadence, recorder, formats, diarization logic
+tools/           call-graph and trace helpers, not part of the package
 ```
-
-`pocs/` are self-contained PEP 723 scripts (`./pocs/live2.py` just runs). They're frozen
-reference points; v3 is the package.
 
 ## How it works
 
@@ -560,7 +561,7 @@ But it was like private capital that funded the acquisition.
 
 $ m dictate --wav paused.wav --hold
 But it was like private capital that funded the acquisition. Super appreciate. Thank
-you, Charlie. Absolutely, happy to. And so, if you have more questions or you need more.
+you. Absolutely, happy to. And so, if you have more questions or you need more.
 ```
 
 `--hold` costs nothing in release latency. Utterances still close on their own pauses and
@@ -920,7 +921,7 @@ m diarize meeting.m4a --speakers 3          # exact count, if known (-n 3 too)
 
 It runs the pyannote community-1 family through **CoreML**, not torch: the segmentation
 and embedding networks go to the ANE/GPU, which leaves the Metal GPU free for ASR. On an
-M3 Max, a 28-minute 3-speaker interview diarizes in **25s — 67x realtime**. pyannote's own
+M3 Max, a 28-minute 3-speaker recording diarizes in **25s — 67x realtime**. pyannote's own
 torch pipeline on MPS is ~24x, and its weights are gated; these conversions are not.
 
 Three stages, which is what the model set dictates:
@@ -940,10 +941,10 @@ Two settings had to be found against real audio, because the obvious ones both f
 
 - **Cluster only on clean embeddings.** An embedding from frames where two people overlap
   describes neither; a short one describes the mask. Filtering to solo speech of at least
-  2s took anchor purity from 59% to 100% on the interview.
-- **...but relax that when there isn't enough.** The same filter on a 32s excerpt of rapid,
-  overlapping turn-taking left **2 usable embeddings out of 46**, and the clip collapsed to
-  one speaker. `_reliable` now walks a ladder and stops at the first rung with enough to
+  2s took anchor purity from 59% to 100% on the 28-minute recording.
+- **...but relax that when there isn't enough.** The same filter on the 32s excerpt in
+  `tests/fixtures/` — rapid, overlapping turn-taking — left **2 usable embeddings out of
+  46**, and the clip collapsed to one speaker. `_reliable` now walks a ladder and stops at the first rung with enough to
   work on. Filters that assume a long recording fail exactly where the recording is short.
 
 Average linkage, not complete. Complete also resists the chaining that made an early
@@ -1031,7 +1032,7 @@ i.e. losing transcript. Depth is surfaced as `queue N` in the HUD instead.
 uv run ruff check src tests    # lint
 uv run ruff format src tests   # format (line length 92)
 uv run ty check                # types
-uv run pytest tests/ -q        # ~25s, offline
+uv run pytest tests/ -q        # ~40s, offline
 ```
 
 All four are clean. Two of ruff's defaults are disabled because they invert this
@@ -1060,7 +1061,7 @@ costs a per-call check in a decode loop, which is the wrong trade here.
 ## Tests
 
 ```sh
-uv run pytest tests/ -q      # ~25s, offline
+uv run pytest tests/ -q      # ~40s, offline
 ```
 
 CPU-only for VAD, cadence, recorder, formats and the diarization logic. The end-to-end

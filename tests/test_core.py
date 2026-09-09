@@ -1158,17 +1158,22 @@ def test_bare_keys_reach_every_command_with_the_option():
 
 
 def _cli_options():
-    """Every command's parameters, off the built CLI: {long option: [(command, ...)]}."""
-    import click
+    """Every command's parameters, off the built CLI: {long option: [(command, ...)]}.
+
+    Read off `.commands` rather than through a click.Context, the way app._params does:
+    typer vendors its own click core, so the group is not a `click.Group` and building a
+    real Context around it is three type errors for something neither call reads. getattr
+    for the last step, and for the same reason app.config_ uses it -- the annotation says
+    `Command`, the object is a `TyperGroup`, and the attribute is what matters.
+    """
     import typer
 
     from mouth.app import app
 
     group = typer.main.get_command(app)
-    ctx = click.Context(group)
     longs, shorts = {}, {}
-    for name in group.list_commands(ctx):
-        for prm in group.get_command(ctx, name).params:
+    for name, cmd in getattr(group, "commands", {}).items():
+        for prm in cmd.params:
             if prm.name == "help":
                 continue
             spelled = [o for o in prm.opts if o.startswith("--")]
