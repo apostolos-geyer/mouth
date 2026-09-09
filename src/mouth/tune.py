@@ -320,7 +320,7 @@ def render(
     lines += [
         "",
         f"# How quickly text appears: {profile.name} -- {profile.blurb}.",
-        "# Bare keys, not a [tui] table: `m cli` shows partials too, and `m cadence`",
+        "# Bare keys, not a [tui] table: `m live` shows partials too, and `m cadence`",
         "# exists to print what this schedule costs. Under [tui] they kept the shipped",
         "# schedule and said so confidently.",
         f"interim = {c.first:g}",

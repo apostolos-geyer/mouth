@@ -56,7 +56,7 @@ RUN, SETUP, LOOK = "Transcribe", "Set up", "Look up"
 _ORDER = (
     # Transcribe: the jobs.
     "tui",
-    "cli",
+    "live",
     "dictate",
     "transcribe",
     "diarize",
@@ -75,6 +75,18 @@ _ORDER = (
 
 
 class _Group(TyperGroup):
+    def resolve_command(self, ctx, args):
+        """Canonicalise an old command name before click sees it.
+
+        Rewriting args rather than overriding get_command on purpose: click's
+        resolve_command returns the name *as typed*, and that string is the key it looks
+        `ctx.default_map` up under. Resolve the alias any later and `m cli` silently
+        stops reading the config file that `m live` reads.
+        """
+        if args and args[0] in cfgfile.ALIASES:
+            args = [cfgfile.ALIASES[args[0]], *args[1:]]
+        return super().resolve_command(ctx, args)
+
     def list_commands(self, ctx) -> list[str]:
         """Listed order, with anything not yet placed falling to the end rather than
         vanishing -- a new command should show up unsorted, not not at all."""
@@ -1380,7 +1392,7 @@ def tui(
 
 
 @app.command(rich_help_panel=RUN)
-def cli(
+def live(
     # Signature order is help order -- panels print in the order the signature first
     # mentions them -- so these run: what audio, which model, how eagerly, where to.
     mic: int | None = MIC,
@@ -1433,7 +1445,7 @@ def cli(
     # line back. Piped to a file, finals-only keeps the output clean.
     show_interim = sys.stdout.isatty() and cfg.cadence is not None
     # transient: the provisional line is scratch space, so leave nothing behind.
-    live = Live(Text(""), console=console, refresh_per_second=12, transient=True)
+    region = Live(Text(""), console=console, refresh_per_second=12, transient=True)
 
     class Hooks:
         def status(self, msg):
@@ -1452,11 +1464,11 @@ def cli(
 
         def interim(self, seg):
             if show_interim:
-                live.update(Text(f"… {seg.text}", style="dim italic"))
+                region.update(Text(f"… {seg.text}", style="dim italic"))
 
         def segment(self, seg):
             # Live keeps its region at the bottom, so console.print lands above it.
-            live.update(Text(""))
+            region.update(Text(""))
             console.print(
                 f"[cyan]{fmt_clock(seg.start)}[/]  {seg.text}"
                 f"  [dim]({seg.took:.1f}s/{seg.audio_sec:.1f}s)[/]",
@@ -1464,14 +1476,14 @@ def cli(
             )
 
         def error(self, offset, msg):
-            live.update(Text(""))
+            region.update(Text(""))
             console.print(f"[red]{fmt_clock(offset)}  transcribe failed: {msg}[/]")
 
     # Load before the Live region starts: loading writes its own progress bars, and two
     # things driving the cursor at once garbles both.
     backend_obj = _load(cfg)
 
-    with live if show_interim else contextlib.nullcontext():
+    with region if show_interim else contextlib.nullcontext():
         result = run_session(cfg, Hooks(), backend=backend_obj)
     _report(cfg, *result)
 

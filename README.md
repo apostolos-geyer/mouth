@@ -55,7 +55,7 @@ uv run m tui           # the package is `mouth`; the command is `m`
 
 ```sh
 m tui                    # full-screen live view (q quit · p pause · c clear)
-m cli                    # streaming output to stdout
+m live                   # streaming output to stdout
 m dictate                # speech to stdout, then exit (--hold for hold-to-talk)
 m transcribe FILE        # a file, as fast as the machine can (~17x realtime)
 m transcribe FILE --speakers   # ...and label who said what
@@ -71,13 +71,16 @@ m tune                   # set it up for your machine and your voice
 m cadence 10             # what the partial schedule costs on a 10s utterance
 
 m tui -l Greek -m 2      # language + mic index
-m cli --wav clip.m4a     # replay a file *in real time*, as if it were the mic
+m live --wav clip.m4a    # replay a file *in real time*, as if it were the mic
 m transcribe clip.m4a    # the same file, at full speed, for the transcript
 m tui --context "Aristotle, peripatetic, Lyceum"   # words to expect
-m cli --no-record        # don't save audio
+m live --no-record       # don't save audio
 
 m dictate -b mlx -M qwen3-asr-1.7b-q8g64 | pbcopy    # same --backend/--model as anywhere
 ```
+
+`m live` was `m cli`, which was a strange name for a subcommand of a CLI. The old name
+still works, silently, and so does a `[cli]` table in a config file.
 
 First run downloads ~5GB of weights. After that, time-to-ready is a property of the
 backend rather than the size of the checkpoint: torch takes 6-10s depending on whether
@@ -117,7 +120,7 @@ so nothing waits on a clock. Measured on an M3 Max with the 8-bit checkpoint: **
 realtime**, a 32s clip in 1.9s. Partials are off, because nobody is watching text land and
 provisional passes are the expensive half of a live session.
 
-`m cli --wav` still exists and still paces to the clock — that is for *watching* a replay,
+`m live --wav` still exists and still paces to the clock — that is for *watching* a replay,
 which is a different thing from wanting the transcript.
 
 For scripts, `--stem` names the outputs deterministically, and the path they were written
@@ -466,7 +469,7 @@ that, fixed per-call overhead dominates and throughput reads several times too l
 
 ## Dictation
 
-`m tui` and `m cli` are sessions. `m dictate` is one dictation:
+`m tui` and `m live` are sessions. `m dictate` is one dictation:
 
 ```sh
 m dictate | pbcopy                 # talk, stop talking, it's on the clipboard

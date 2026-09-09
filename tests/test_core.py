@@ -1078,8 +1078,27 @@ def test_bare_keys_reach_every_command_with_the_option():
     failure.
     """
     m = _map('backend = "mlx"\nlanguage = "Greek"\n')
-    assert {"tui", "cli", "dictate", "tune", "transcribe"} <= set(m)
+    assert {"tui", "live", "dictate", "tune", "transcribe"} <= set(m)
     assert all(v == {"backend": "mlx", "language": "Greek"} for v in m.values())
+
+
+def test_the_old_command_name_still_reaches_the_command():
+    """`m cli` became `m live`. A config file written before that has a [cli] table in
+    it, and the setting is unambiguous -- erroring on it would teach nothing."""
+    assert _map('[cli]\npartials = "stream"\n') == {"live": {"partials": "stream"}}
+
+
+def test_an_alias_does_not_get_its_own_section():
+    """One command, one entry: bare keys must not land under both names, or `m config`
+    reports the same setting twice and they could drift apart."""
+    m = _map('backend = "mlx"\n')
+    assert "cli" not in m and "live" in m
+
+
+def test_a_still_unknown_section_is_still_an_error():
+    """The alias table is a fixed two-name map, not a general shrug at bad sections."""
+    with pytest.raises(cfgfile.ConfigError, match=r"\[nope\] is not a command"):
+        _map('[nope]\nbackend = "mlx"\n')
 
 
 def test_a_new_command_inherits_settings_without_being_listed():
@@ -1127,7 +1146,7 @@ def test_either_spelling_of_a_flag_resolves():
 def test_home_relative_paths_expand():
     """Click casts strings to Paths for us, but it does not expand `~`, and a config
     file is exactly where someone writes one."""
-    out = _map('out = "~/notes"\n')["cli"]["out"]
+    out = _map('out = "~/notes"\n')["live"]["out"]
     assert out == str(Path.home() / "notes")
 
 
@@ -1435,7 +1454,7 @@ def test_tuned_config_is_valid_and_says_what_it_set():
     data = tomllib.loads(text)
     assert data["backend"] == "mlx" and data["min-speech"] == 0.12
     assert data["partials"] == "x-draft"
-    # Bare, not under [tui]: `m cli` draws partials too and `m cadence` prints what
+    # Bare, not under [tui]: `m live` draws partials too and `m cadence` prints what
     # the schedule costs, so a table would leave both on the shipped defaults.
     assert (data["interim"], data["growth"], data["max-gap"]) == (0.15, 1.25, 1.2)
     # And it round-trips through the real validator, against the real CLI.

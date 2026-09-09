@@ -9,7 +9,7 @@ inside the parser. There is no per-flag plumbing to forget and no "was this pass
 sentinel to get wrong, which is the failure mode of every hand-rolled version of this.
 
 A bare key reaches every command that has that option, which is almost all of them: a
-setting for "how this machine transcribes" is wrong for `m tui` and right for `m cli`
+setting for "how this machine transcribes" is wrong for `m tui` and right for `m live`
 only by accident. The exceptions are named in EXCLUDED below and there are three, each
 one a command where a flag name means something else -- `--threshold` is an RMS gate to a
 session and a cosine distance to `diarize`, and a bare key reaching both would collapse
@@ -98,6 +98,16 @@ _TEMPLATE = """\
 #: read never, so "unknown option --x-partial-draft" would be a true statement that
 #: teaches nothing -- the option did exist, and the setting still does.
 RENAMED = {"x_partial_draft": 'partials = "x-draft"'}
+
+#: Command names that used to be, and are. `m cli` was a strange name for a subcommand of
+#: a CLI; everything about it is live, so it is `m live`. The old name still resolves --
+#: silently, both here and on the command line, because a rename that costs a person their
+#: muscle memory and their scripts is a rename for the author's benefit.
+#:
+#: Here as well as in app.py because a [cli] table in a config file has to keep reaching
+#: the same command. Erroring on it would be technically defensible and useless: the
+#: setting is unambiguous and the file is one nobody reads twice.
+ALIASES = {"cli": "live"}
 
 
 class ConfigError(Exception):
@@ -196,14 +206,17 @@ def default_map(
                 out.setdefault(cmd, {})[alias[name]] = _value(value)
 
     for cmd, table in tables.items():
-        alias = params.get(cmd)
+        # `cmd` stays the name as written, so an error quotes the section the reader can
+        # actually find in their file; `target` is where it lands.
+        target = ALIASES.get(cmd, cmd)
+        alias = params.get(target)
         if alias is None:
             raise ConfigError(f"[{cmd}] is not a command.{_suggest(cmd, params, fmt=str)}")
         for key, value in table.items():
             name = _norm(key)
             if name not in alias:
                 raise ConfigError(f"[{cmd}] has no {_flag(name)}.{_suggest(key, alias)}")
-            out.setdefault(cmd, {})[alias[name]] = _value(value)
+            out.setdefault(target, {})[alias[name]] = _value(value)
     return out
 
 
