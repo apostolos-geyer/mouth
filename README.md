@@ -1,15 +1,79 @@
 # mouth
 
-Live local transcription with Qwen3-ASR + Qwen3-ForcedAligner, running on MPS.
+Live local transcription with Qwen3-ASR + Qwen3-ForcedAligner. No API, no upload, no
+account — the weights sit on your disk and the audio never leaves the machine. Built for
+Apple Silicon; see [Platforms](#platforms) for what works elsewhere.
 
-Everything runs on the machine in front of you: no API, no upload, no account. It started
-as a batch transcriber for recordings and grew a microphone, which is why the file path
-(`m transcribe`) and the live path (`m tui`, `m live`, `m dictate`) share a VAD, a model
-and an output format rather than being two tools.
+## Quickstart
+
+```sh
+uv tool install -e ".[mlx,diarize]"
+uv tool update-shell                          # once, if uv's bin dir isn't on PATH
+```
+
+Quantise both checkpoints. This is the single biggest thing you can do — 2.2x faster
+inference and 0.4s to ready instead of 6-10s — and it is a deliberate step, so nothing
+does it for you:
+
+```sh
+m quantize                                    # -> qwen3-asr-1.7b-q8g64
+m quantize Qwen/Qwen3-ForcedAligner-0.6B      # -> qwen3-forcedaligner-0.6b-q8g64
+m models                                      # confirm both are there
+```
+
+Keep them, so you never pass them again:
+
+```sh
+m config --edit                               # creates it if it doesn't exist
+```
+
+```toml
+backend = "mlx"
+model   = "qwen3-asr-1.7b-q8g64"
+aligner = "qwen3-forcedaligner-0.6b-q8g64"
+```
+
+Then measure this machine and your voice, and go:
+
+```sh
+m tune                                        # writes --min-speech and the partial schedule
+m tui
+```
+
+First run downloads ~5GB of weights. `m config` prints what the file sets, per command.
+
+## Commands
+
+```sh
+m tui                    # full-screen live view (q quit · p pause · c clear)
+m live                   # streaming output to stdout
+m live --plain           # ...just the text, for a pipe
+m dictate                # speech to stdout, then exit (--hold for hold-to-talk)
+m transcribe FILE        # a file, as fast as the machine can (~17x realtime)
+m transcribe FILE --diarize    # ...and label who said what (--speakers N if you know)
+m diarize FILE           # who spoke when, on its own
+m tune                   # set it up for your machine and your voice
+m quantize               # build a quantised checkpoint
+m config                 # defaults for the flags you always pass
+m models                 # local checkpoints available to --model
+m paths                  # where config, transcripts and checkpoints live
+m devices                # list microphones
+m languages              # list supported ASR languages
+m backends               # which inference backends are installed
+m cadence 10             # what the partial schedule costs on a 10s utterance
+
+m tui -l Greek -m 2      # language + mic index
+m tui --context "Kubernetes, kubectl, etcd"        # words to expect
+m live --wav clip.m4a    # replay a file *in real time*, as if it were the mic
+m transcribe clip.m4a    # the same file, at full speed, for the transcript
+m live --no-record       # don't save audio
+m dictate | pbcopy       # talk, stop talking, it's on the clipboard
+```
+
+`--language` is a hint, not a constraint: speaking Greek with the English default still
+produces Greek, but it romanizes the same phrase on one pass and not the next. Set it.
 
 ## Platforms
-
-Developed and tested on Apple Silicon. What to expect elsewhere:
 
 | | M-series Mac | Intel Mac | Linux/Windows |
 |---|---|---|---|
@@ -23,91 +87,38 @@ anything short of a Mac transcribes but cannot tell you who spoke.
 
 ## Install
 
-```sh
-uv tool install -e ".[mlx,diarize]"    # a system-wide `m`, live against this clone
-uv tool update-shell                   # once, if uv's bin dir isn't on your PATH yet
-```
+The two extras are the heavy optional paths: `mlx` is the MLX backend and what
+`m quantize` needs, `diarize` is `m diarize`. Neither is a default dependency — the first
+pulls the whole mlx stack, the second coremltools. `uv tool install .` gets torch alone.
 
-`-e` links the install to `src/` instead of copying it, so edits are live and there's no
-reinstall step at all. Drop it for a snapshot — but then `--force` is *not* enough to
-update one. uv caches the built wheel for a local path, so a rebuild needs
-`--refresh-package mouth`, and without it the install silently stays behind.
-
-That failure is worth recognising, because it doesn't look like a stale binary: an old
-`m` paired with a current config file rejects its own config.
-
-```
-$ m tui
-Invalid value for --config: unknown option --min-speech.
-```
-
-The extras are the two heavy optional paths — `mlx` is the MLX backend (`--backend mlx`,
-and what `m quantize` needs), `diarize` is `m diarize`. Neither is a default dependency,
-because the first pulls the whole mlx stack and the second coremltools. `uv tool install .`
-gets the torch path alone.
-
-Or run it out of the repo without installing anything:
+To run out of the repo without installing anything:
 
 ```sh
 uv sync
 uv run m tui           # the package is `mouth`; the command is `m`
 ```
 
-## Commands
+`-e` links the install to `src/` instead of copying it, so edits are live and there is no
+reinstall step. Drop it for a snapshot — but then `--force` is *not* enough to update one:
+uv caches the built wheel for a local path, so a rebuild needs `--refresh-package mouth`,
+and without it the install silently stays behind. It doesn't look like a stale binary
+either. An old `m` against a current config file rejects its own config:
 
-```sh
-m tui                    # full-screen live view (q quit · p pause · c clear)
-m live                   # streaming output to stdout
-m live --plain           # ...just the text, for a pipe
-m dictate                # speech to stdout, then exit (--hold for hold-to-talk)
-m transcribe FILE        # a file, as fast as the machine can (~17x realtime)
-m transcribe FILE --diarize    # ...and label who said what (--speakers N if you know)
-m devices                # list microphones
-m languages              # list supported ASR languages
-m backends               # which inference backends are installed
-m models                 # local checkpoints available to --model
-m quantize               # build a quantised checkpoint (the big perf win)
-m diarize FILE           # who spoke when, offline
-m paths                  # where config, transcripts and checkpoints live
-m config                 # defaults for the flags you always pass
-m tune                   # set it up for your machine and your voice
-m cadence 10             # what the partial schedule costs on a 10s utterance
-
-m tui -l Greek -m 2      # language + mic index
-m live --wav clip.m4a    # replay a file *in real time*, as if it were the mic
-m transcribe clip.m4a    # the same file, at full speed, for the transcript
-m tui --context "Aristotle, peripatetic, Lyceum"   # words to expect
-m live --no-record       # don't save audio
-
-m dictate -b mlx -M qwen3-asr-1.7b-q8g64 | pbcopy    # same --backend/--model as anywhere
+```
+$ m tui
+Invalid value for --config: unknown option --min-speech.
 ```
 
-First run downloads ~5GB of weights. After that, time-to-ready is a property of the
-backend rather than the size of the checkpoint: torch takes 6-10s depending on whether
-the forced aligner loads with it, and any quantised checkpoint on MLX is ready in under
-half a second.
-
-`--language` is a hint, not a hard constraint — speaking Greek with the English default
-still produces Greek, but inconsistently, romanizing the same phrase on one pass and not
-the next. Setting it properly is worth it.
-
-## Setup
+## Tuning
 
 ```sh
 m tune                   # say a few things; it measures and writes your config
 m tune --wav clip.flac   # measure against a recording instead
 ```
 
-Asks you to say a few things, times how fast this machine transcribes them, and offers a
-choice about how quickly text should appear while you talk. Everything it suggests is
-measured on the spot: `--min-speech` comes from the shortest phrase you actually said,
-and each option is marked with what it would cost *here*.
-
-That last part matters more than it sounds. Whether the fastest option is affordable is a
-property of your machine, not of the option — an early version wrote "needs the speed-up
-to be affordable at all" into the description of a profile, which baked one laptop's
-answer into every laptop's menu. The descriptions now say what the experience is; the
-verdict beside them is measured.
+`--min-speech` comes from the shortest phrase you actually said, and each cadence option
+is marked with what it costs on this machine — whether the fastest one is affordable is a
+property of your hardware, not of the option.
 
 ## Transcribing a file
 
@@ -751,19 +762,22 @@ interjection) landed at 1.28s against torch's 0.24s; with an 8-bit aligner every
 matches torch exactly. Same command, different flag:
 
 ```sh
-m quantize Qwen/Qwen3-ForcedAligner-0.6B    # -> models/qwen3-forcedaligner-0.6b-q8g64
-m tui -b mlx -M models/qwen3-asr-1.7b-q8g64 --aligner models/qwen3-forcedaligner-0.6b-q8g64
+m quantize Qwen/Qwen3-ForcedAligner-0.6B    # -> qwen3-forcedaligner-0.6b-q8g64
+m tui -b mlx -M qwen3-asr-1.7b-q8g64 --aligner qwen3-forcedaligner-0.6b-q8g64
 ```
 
 4-bit costs +0.43pp WER upstream for another ~1.7x on long clips.
 
 ```sh
-m quantize                                  # 8-bit by default -> models/qwen3-asr-1.7b-q8g64
+m quantize                                  # 8-bit by default -> qwen3-asr-1.7b-q8g64
 m quantize --bits 4                         # speed-first
 m quantize --mode mxfp4                     # MLX float modes: mxfp4, mxfp8, nvfp4
 m models                                    # what's on disk
-m tui --backend mlx -M models/qwen3-asr-1.7b-q8g64
 ```
+
+A checkpoint name resolves against the checkpoint directory, so `-M
+qwen3-asr-1.7b-q8g64` works from anywhere and is what belongs in the config —
+see [Quickstart](#quickstart). A path or an HF repo id work too.
 
 `torch` stays the **default** because a fresh checkout has no quantised checkpoint and
 `m quantize` is a deliberate step. Once you've run it, mlx is the fast path.

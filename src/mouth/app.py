@@ -575,7 +575,7 @@ def quantize(
         help="Where to write the checkpoint [dim](default: models/<name>-<tag>)[/].",
     ),
 ):
-    """Build a quantised MLX checkpoint, then run it with [b]--backend mlx -M <dir>[/b].
+    """Build a quantised MLX checkpoint, then name it in your config to keep it.
 
     The largest lever on this machine. Measured on an M3 Max against the 1.7B, per
     transcribe() call: an 8-bit checkpoint is [b]2.2x faster than the bf16/MPS default[/b]
@@ -601,12 +601,19 @@ def quantize(
     except (ValueError, OSError) as e:
         raise typer.BadParameter(str(e)) from e
     # The aligner is the same architecture with a classification head, so it quantises
-    # through the same path -- but it is passed with a different flag.
-    flag = "--aligner" if "aligner" in source.lower() else "-M"
+    # through the same path -- but it is a different config key.
+    key = "aligner" if "aligner" in source.lower() else "model"
     console.print(
         f"[green]{built}[/]  [dim]{describe_checkpoint(str(built))} · "
-        f"{qz.size_gb(built):.2f} GB[/]\n"
-        f"[dim]run it:[/] m tui --backend mlx {flag} {built}"
+        f"{qz.size_gb(built):.2f} GB[/]"
+    )
+    # Point at the config, not at a flag. A checkpoint you have to remember to pass is one
+    # you will forget to pass, and the whole reason to build it is that it is faster.
+    console.print(
+        f'[dim]keep it:[/] `m config --edit`, then [b]{key} = "{built.name}"[/b] '
+        f'[dim](with[/] backend = "mlx"[dim])[/]\n'
+        f"[dim]or once:[/] m tui --backend mlx "
+        f"{'--aligner' if key == 'aligner' else '-M'} {built.name}"
     )
 
 
