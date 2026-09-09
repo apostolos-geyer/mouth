@@ -1157,18 +1157,126 @@ def test_bare_keys_reach_every_command_with_the_option():
     assert all(v == {"backend": "mlx", "language": "Greek"} for v in m.values())
 
 
+def _cli_options():
+    """Every command's parameters, off the built CLI: {long option: [(command, ...)]}."""
+    import click
+    import typer
+
+    from mouth.app import app
+
+    group = typer.main.get_command(app)
+    ctx = click.Context(group)
+    longs, shorts = {}, {}
+    for name in group.list_commands(ctx):
+        for prm in group.get_command(ctx, name).params:
+            if prm.name == "help":
+                continue
+            spelled = [o for o in prm.opts if o.startswith("--")]
+            key = spelled[0] if spelled else f"<{prm.name}>"
+            kind = (
+                "flag" if getattr(prm, "is_flag", False) else getattr(prm.type, "name", "?")
+            )
+            longs.setdefault(key, []).append((name, kind, prm.name))
+            for short in (o for o in prm.opts if not o.startswith("--")):
+                shorts.setdefault(short, []).append((name, key))
+    return longs, shorts
+
+
+def test_no_flag_name_means_two_things():
+    """The invariant behind three renames, kept as a property rather than a memory.
+
+    `--speakers` was a count to `m diarize` and a bare on/off switch to `m transcribe`,
+    so `m transcribe interview.m4a --speakers 3` died on "unexpected extra argument".
+    `--threshold` was an RMS gate and a cosine distance. `--out` was a directory and a
+    single RTTM file. Each was a flag someone could reasonably think they understood.
+
+    A name shared by two commands must take the same type and mean the same thing. Add a
+    fourth collision and this fails here rather than in somebody's pipeline.
+    """
+    longs, _ = _cli_options()
+    clashes = {
+        opt: uses
+        for opt, uses in longs.items()
+        if len({(kind, param) for _, kind, param in uses}) > 1
+    }
+    assert not clashes, "\n".join(
+        f"{opt}: " + ", ".join(f"m {c} takes {k} -> {p}" for c, k, p in uses)
+        for opt, uses in clashes.items()
+    )
+
+
+def test_a_short_flag_is_the_same_idea_everywhere():
+    """-o is the one short flag that names different long options, and deliberately: it
+    is "where this command's output goes" in all three. Every other short flag must map
+    to exactly one long name, or muscle memory from one command misfires in the next."""
+    _, shorts = _cli_options()
+    strays = {
+        short: sorted({opt for _, opt in uses})
+        for short, uses in shorts.items()
+        if len({opt for _, opt in uses}) > 1
+    }
+    assert strays == {"-o": ["--dest", "--out", "--rttm"]}, strays
+
+
+def test_a_config_key_reaches_every_command_that_has_the_flag():
+    """A flag's parameter name has to match its spelling, or a bare key splits.
+
+    `--interim` bound to a parameter called `first` in tui/live/cadence and `interim` in
+    dictate, so `first = 0.9` in a config file set three of the four and skipped the
+    fourth -- accepted, plausible, and wrong.
+    """
+    longs, _ = _cli_options()
+    split = {
+        opt: sorted({param for _, _, param in uses})
+        for opt, uses in longs.items()
+        if opt.startswith("--") and len({param for _, _, param in uses}) > 1
+    }
+    assert not split, f"one flag, two parameter names: {split}"
+
+
 def test_a_new_command_inherits_settings_without_being_listed():
     """The property the inversion buys, stated so it cannot quietly go away."""
     from mouth import config as cfg
 
     assert cfg.reaches("some-future-command")
+
+
+def test_nothing_is_excluded_because_nothing_collides():
+    """EXCLUDED is empty, and that is a claim about the CLI rather than an oversight:
+    every flag name now means one thing. The escape hatch stays for the day one doesn't."""
+    from mouth import config as cfg
+
+    assert cfg.EXCLUDED == {}
+
+
+def test_the_escape_hatch_still_works_if_a_collision_appears(monkeypatch):
+    """Empty is not the same as gone. Exercised against a synthetic collision, so the
+    mechanism keeps being tested after the real ones were renamed away.
+
+    --speakers is the right shape to test with: two commands have it, so excluding one
+    leaves a bare key with somewhere legitimate to land."""
+    from mouth import config as cfg
+
+    monkeypatch.setattr(
+        cfg, "EXCLUDED", {"diarize": "--speakers would mean something else"}
+    )
     assert not cfg.reaches("diarize")
 
+    bare = _map("speakers = 2\n")
+    assert bare["transcribe"] == {"num_speakers": 2}, "still reaches the others"
+    assert "diarize" not in bare, "and stops at the excluded one"
+    # Naming the table is how you mean it anyway.
+    assert _map("[diarize]\nspeakers = 2\n") == {"diarize": {"num_speakers": 2}}
 
-def test_a_colliding_name_still_needs_its_own_table():
-    """--threshold is an RMS gate to a session and a cosine distance to diarize."""
+
+def test_the_renamed_diarize_options_land_where_they_say():
+    """The three collisions, gone by renaming rather than by exception."""
+    # --threshold is the RMS gate, and reaches every session command. Diarize has none.
     assert "diarize" not in _map("threshold = 0.02\n")
-    assert _map("[diarize]\nthreshold = 0.7\n") == {"diarize": {"threshold": 0.7}}
+    assert _map("[diarize]\nvoice-distance = 0.7\n") == {"diarize": {"voice_distance": 0.7}}
+    # --out is a directory; diarize writes one RTTM file and quantize one checkpoint.
+    assert "diarize" not in _map('out = "~/notes"\n')
+    assert "quantize" not in _map('out = "~/notes"\n')
 
 
 def test_a_table_overrides_the_bare_key():
@@ -1177,7 +1285,10 @@ def test_a_table_overrides_the_bare_key():
     assert m["dictate"]["record"] is False
 
 
-def test_an_option_belonging_elsewhere_says_where_it_goes():
+def test_an_option_belonging_elsewhere_says_where_it_goes(monkeypatch):
+    """When a name really is scoped to one command, the error says which -- "unknown
+    option" would be a lie and the fix is a table, not a spelling."""
+    monkeypatch.setattr(cfgfile, "EXCLUDED", {"quantize": "--bits is a quantiser width"})
     with pytest.raises(cfgfile.ConfigError, match=r"\[quantize\]"):
         _map("bits = 4\n")
 
@@ -1516,7 +1627,7 @@ def test_tuned_config_is_valid_and_says_what_it_set():
     # And it round-trips through the real validator, against the real CLI.
     mapped = _map(text)
     assert mapped["tui"]["backend"] == "mlx"
-    assert mapped["cadence"]["first"] == 0.15, "the schedule printer must see it too"
+    assert mapped["cadence"]["interim"] == 0.15, "the schedule printer must see it too"
     assert mapped["transcribe"]["min_speech"] == 0.12, "and so must the file path"
 
 

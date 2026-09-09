@@ -13,7 +13,7 @@ Developed and tested on Apple Silicon. What to expect elsewhere:
 |---|---|---|---|
 | transcription, torch backend | ✓ (`mps`) | ✓ but CPU only — MPS needs Apple Silicon | ✓ (`--device cuda` untested, or `cpu`, slow) |
 | transcription, MLX backend | ✓ fast | ✗ | ✗ (mlx ships arm64-macOS wheels only) |
-| diarization (`--speakers`, `m diarize`) | ✓ | ✓ slow | ✗ — CoreML models; there is no other implementation |
+| diarization (`--diarize`, `m diarize`) | ✓ | ✓ slow | ✗ — CoreML models; there is no other implementation |
 | live mic, TUI, quantize, tune | ✓ | ✓ | ✓ |
 
 The diarization row is the one that bites: speaker labels exist only through CoreML, so
@@ -59,7 +59,7 @@ m live                   # streaming output to stdout
 m live --plain           # ...just the text, for a pipe
 m dictate                # speech to stdout, then exit (--hold for hold-to-talk)
 m transcribe FILE        # a file, as fast as the machine can (~17x realtime)
-m transcribe FILE --speakers   # ...and label who said what
+m transcribe FILE --diarize    # ...and label who said what (--speakers N if you know)
 m devices                # list microphones
 m languages              # list supported ASR languages
 m backends               # which inference backends are installed
@@ -132,7 +132,7 @@ m transcribe lecture.m4a --stem lecture-ep42
 ```
 
 ```sh
-m transcribe interview.m4a --speakers      # or -n 2 if you know the count
+m transcribe interview.m4a --diarize       # or --speakers 2 / -n 2 if you know the count
 ```
 
 adds `.rttm`, `.speakers.json` (every word with a speaker) and `.speakers.md`:
@@ -184,7 +184,7 @@ Nah, well, I've used it a little bit, but like not so much...
 Yeah.
 ```
 
-That reordering is why `--speakers` decodes the file before the session starts and hands
+That reordering is why `--diarize` decodes the file before the session starts and hands
 the audio to it, rather than reading it twice.
 
 **Word timings then come from aligning each block once**, rather than each utterance as it
@@ -278,11 +278,9 @@ construction, because this feeds Click's `default_map` and the layering happens 
 parser. There's no per-flag plumbing to forget and no "was this passed?" sentinel to get
 wrong, which is where hand-rolled versions of this leak.
 
-A bare key reaches **every command that has that option**, which is nearly all of them —
-"how this machine transcribes" is a setting, not a per-command opinion. Only three
-commands opt out, each because a flag name genuinely means something else there:
-`diarize` (`--threshold` is a cosine distance between voices, not an RMS gate), `quantize`
-(`--model` is the checkpoint to convert), and `models` (`--dir` is where to look).
+A bare key reaches **every command that has that option**, which is now all of them —
+"how this machine transcribes" is a setting, not a per-command opinion. A table named
+after a command narrows a key to it.
 
 This was the other way round at first — a hand-written list of commands bare keys *did*
 reach — and it was wrong three times, once for every command added after it: `tune`
@@ -292,10 +290,9 @@ checkpoint, `cadence` printed the shipped schedule rather than the configured on
 wrong answer rather than a failure. Inverted, a new command inherits settings by default
 and only a real collision needs writing down.
 
-Everything else takes a table named after the command, because the same flag name doesn't
-mean the same thing everywhere: `--threshold` is an RMS gate to a session and a cosine
-distance to `diarize`, and a bare key that reached both would collapse every speaker into
-one.
+Three collisions then needed writing down, and the list of them was the tell — it was a
+list of flags that lied. They are gone by renaming rather than by exception, so no command
+opts out any more. See [One flag, one meaning](#one-flag-one-meaning).
 
 Keys are checked against the real CLI, not a list kept in parallel with it. So either
 spelling resolves — `max-gap` as `--help` prints it, `max_gap` as the parameter is named,
@@ -464,6 +461,37 @@ torch does **~10-15x realtime** for clips of 2s and up (0.19s for 2s, 0.57s for 
 2.07s for 32s), so a 30s utterance's ~193s of scheduled audio is about 16s of compute —
 roughly half realtime, and comfortable. Measure this on a clip of 2s or longer: below
 that, fixed per-call overhead dominates and throughput reads several times too low.
+
+## One flag, one meaning
+
+A name that means one thing in one command and something else in the next is the kind of
+thing you only find out about by getting a wrong answer. Three did:
+
+| was | in | meant | is now |
+|---|---|---|---|
+| `--speakers` | `m transcribe` | an on/off switch | `--diarize` |
+| `--speakers` | `m diarize` | a speaker count | `--speakers N` (`-n`), and the same in `m transcribe` |
+| `--threshold` | `m diarize` | cosine distance between voices | `--voice-distance` |
+| `--out` | `m diarize` | one RTTM file | `--rttm FILE` |
+| `--out` | `m quantize` | where a checkpoint goes | `--dest DIR` |
+| `--model` | `m quantize` | the weights to *convert* | the `SOURCE` argument |
+
+The one people actually hit: `m transcribe interview.m4a --speakers 3` is what anyone
+would type, and it used to fail with `Got unexpected extra argument(s) (3)` because
+`--speakers` there was a boolean. Now `--speakers N` is a count in both commands, and
+`--diarize` is the switch — named after the command that does only that.
+
+`-o` is still shared by `--out`, `--rttm` and `--dest`, on purpose: it means "where this
+command's output goes" in all three, which is the one thing they have in common. The long
+names say what shape it takes.
+
+These renames also emptied the config file's exception list. It had one entry per lying
+flag, so `--threshold` inside `[diarize]` meant a cosine distance while a bare
+`threshold` meant an RMS gate — a distinction nobody should have to hold. Two tests keep
+it that way: one fails if a flag name ever takes two types or two meanings, one fails if a
+flag's parameter name stops matching its spelling. That second one was a live bug —
+`--interim` bound to `first` in three commands and `interim` in `m dictate`, so
+`first = 0.9` in a config file set three of the four and silently skipped `m dictate`.
 
 ## Piping a live session
 
@@ -885,9 +913,9 @@ Who spoke when, as a separate stage from what was said.
 ```sh
 uv sync --extra diarize
 m diarize meeting.m4a                       # wav, flac, m4a, mp3, mp4
-m diarize meeting.m4a -o meeting.rttm       # RTTM for dscore / pyannote.metrics
+m diarize meeting.m4a --rttm meeting.rttm   # RTTM for dscore / pyannote.metrics
 m diarize meeting.m4a --words out/x.words.json   # label an existing transcript
-m diarize meeting.m4a -n 3                  # exact speaker count, if known
+m diarize meeting.m4a --speakers 3          # exact count, if known (-n 3 too)
 ```
 
 It runs the pyannote community-1 family through **CoreML**, not torch: the segmentation

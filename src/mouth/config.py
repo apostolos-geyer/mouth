@@ -8,12 +8,9 @@ but by construction, because this feeds Click's `default_map` and the layering h
 inside the parser. There is no per-flag plumbing to forget and no "was this passed?"
 sentinel to get wrong, which is the failure mode of every hand-rolled version of this.
 
-A bare key reaches every command that has that option, which is almost all of them: a
+A bare key reaches every command that has that option, which is now all of them: a
 setting for "how this machine transcribes" is wrong for `m tui` and right for `m live`
-only by accident. The exceptions are named in EXCLUDED below and there are three, each
-one a command where a flag name means something else -- `--threshold` is an RMS gate to a
-session and a cosine distance to `diarize`, and a bare key reaching both would collapse
-every speaker into one. Those take a table named after the command:
+only by accident. A table named after a command narrows a key to it:
 
     backend = "mlx"
     model = "qwen3-asr-1.7b-q8g64"
@@ -23,7 +20,15 @@ every speaker into one. Those take a table named after the command:
     hold = true
 
     [diarize]
-    threshold = 0.7
+    voice-distance = 0.7
+
+EXCLUDED below is the escape hatch for a flag name that means two things, and it is empty
+-- not because the problem never arose, but because it was fixed on the other side. It
+held three commands: `--threshold` was an RMS gate to a session and a cosine distance to
+`m diarize`, `--out` was a directory to a session and one RTTM file to `m diarize`, and
+`--model` was the checkpoint to run everywhere but the checkpoint to convert in
+`m quantize`. Those are now --voice-distance, --rttm and a SOURCE argument, so a bare key
+means one thing wherever it lands and nothing has to be written down.
 
 Unknown keys are an error rather than a shrug. A config file is write-once and read
 never; a typo that silently does nothing is a setting you believe is on for months.
@@ -37,26 +42,21 @@ from typing import Any
 
 from . import paths
 
-#: Commands a bare key must NOT reach, and why -- the only place a flag name means
-#: something different from what it means everywhere else.
+#: Commands a bare key must NOT reach, and why -- for a flag name that means something
+#: different from what it means everywhere else.
 #:
-#: This used to be the other way round: a hand-written list of commands bare keys *did*
-#: reach. Three commands were added after it and all three were wrong for it -- `tune`
-#: benchmarked stock torch while the config pointed everything else at a quantised MLX
-#: checkpoint, `cadence` printed the shipped schedule rather than the configured one, and
-#: `transcribe` gated speech at 0.3s against a config asking for 0.15s. Each was a silent
-#: wrong answer, not a failure, and each needed a fifth copy of the list to be updated.
+#: Empty, and kept. Renaming the three collisions out of the CLI was the better fix, but
+#: this is what notices if a fourth one is introduced: without it a bare key silently
+#: reaches a command that reads it as something else, which is a wrong answer rather than
+#: a failure. `test_no_flag_name_means_two_things` is the other half -- it fails when a
+#: new collision appears, and this is where the answer goes if renaming is ever wrong.
 #:
-#: Inverted, a new command inherits the settings by default and only an actual name
-#: collision needs writing down -- which is a fact about the flag, visible where the flag
-#: is declared, rather than a fact about the roster.
-EXCLUDED = {
-    "diarize": "--threshold is a cosine distance between voices, not an RMS gate, and "
-    "--out is one RTTM file rather than a directory",
-    "quantize": "--model is the checkpoint to convert and --out where to write it; both "
-    "are the opposite of what they mean to a session",
-    "models": "--dir is where checkpoints are looked for, not where anything is written",
-}
+#: It also used to be inverted -- a hand-written list of commands bare keys *did* reach.
+#: Three commands were added after it and all three were wrong for it: `tune` benchmarked
+#: stock torch while the config pointed everything else at a quantised MLX checkpoint,
+#: `cadence` printed the shipped schedule rather than the configured one, and `transcribe`
+#: gated speech at 0.3s against a config asking for 0.15s. Each was silent.
+EXCLUDED: dict[str, str] = {}
 
 
 def reaches(command: str) -> bool:
@@ -68,8 +68,8 @@ _TEMPLATE = """\
 # mouth -- defaults for the flags you'd otherwise type every time.
 # A flag on the command line still beats anything in here.
 #
-# Bare keys below reach every command that has the option. A few commands read a
-# flag name differently ({excluded}) and take a table instead.
+# Bare keys below reach every command that has the option; a [table] named after a
+# command narrows a key to that one.
 # TOML rule worth knowing: bare keys must come before the first [table] or they
 # land inside it.
 
@@ -89,8 +89,8 @@ _TEMPLATE = """\
 # partials = "stream"               # needs backend = "mlx"
 
 # [diarize]
-# threshold = 0.65                  # cosine distance -- NOT the VAD threshold above
-# max_speakers = 8
+# voice-distance = 0.65             # how close two voices are still one person
+# max-speakers = 8
 """
 
 
@@ -208,8 +208,8 @@ def default_map(
 
 
 def template() -> str:
-    """The starter config, with the command list filled in from SESSION."""
-    return _TEMPLATE.format(excluded=", ".join(f"m {c}" for c in sorted(EXCLUDED)))
+    """The starter config."""
+    return _TEMPLATE
 
 
 def write_template(path: Path) -> None:

@@ -189,12 +189,27 @@ def _root(
 IN, ASR, LAT, OUTP = "Audio in", "Recognition", "Partials & latency", "Output"
 SPK = "Speakers"
 
+# One name, one meaning, one type, in both commands that know about speakers: a count.
+# It used to be a count in `m diarize` and a bare on/off switch in `m transcribe`, so
+# `m transcribe interview.m4a --speakers 3` -- which is what anybody types -- died with
+# "Got unexpected extra argument (3)". Whether to diarize at all is a different question
+# and now has its own name, --diarize, matching the command that does only that.
+NSPEAKERS = typer.Option(
+    None,
+    "--speakers",
+    "-n",
+    help="Exact speaker count, if you know it "
+    "[dim](otherwise it is worked out; see --min-speakers/--max-speakers)[/].",
+    rich_help_panel=SPK,
+)
+
 
 # Shared across the run commands; typer accepts the same OptionInfo in several signatures.
 OUT = typer.Option(
     paths.out_dir(),
     "--out",
     "-o",
+    metavar="DIR",
     # No show_default: an XDG path is long enough that rich truncates it to an ellipsis
     # in the help column, which tells the reader less than the pointer does.
     help="Where transcripts go [dim](`m paths`)[/].",
@@ -345,7 +360,7 @@ def _config(
     mic,
     wav,
     threshold,
-    first,
+    interim,
     growth,
     max_gap,
     record,
@@ -387,7 +402,9 @@ def _config(
     # Checkpoint refs are resolved in backends.resolve_checkpoint, which knows about the
     # checkpoint directory. An earlier guard here only fired when the ref's *parent*
     # existed, so a stale `models/foo` sailed past it and died as a Hub 401.
-    cadence = Cadence(first=first, growth=growth, max_gap=max_gap) if first > 0 else None
+    cadence = (
+        Cadence(first=interim, growth=growth, max_gap=max_gap) if interim > 0 else None
+    )
     return Config(
         out_dir=out,
         language=language,
@@ -427,7 +444,7 @@ def _load(cfg: Config, out: Console = console, on_status=None, align: bool | Non
             on_status=status,
             # No aligner load at all when nothing will ask for word timings. The override
             # is for a caller that wants the aligner without running it per utterance --
-            # `m transcribe --speakers` times whole speaker blocks afterwards instead.
+            # `m transcribe --diarize` times whole speaker blocks afterwards instead.
             align=cfg.timestamps if align is None else align,
         )
 
@@ -532,8 +549,13 @@ def models(
 
 @app.command(rich_help_panel=SETUP)
 def quantize(
-    model: str = typer.Argument(
-        DEFAULT_ASR, help="Source weights: HF repo id or directory."
+    source: str = typer.Argument(
+        DEFAULT_ASR,
+        metavar="SOURCE",
+        # Not `model`: --model everywhere else names the checkpoint to *run*, and a bare
+        # `model =` in a config file reaching this one told `m quantize` to re-quantise
+        # the quantised checkpoint it was already using.
+        help="Weights to convert: HF repo id or directory.",
     ),
     bits: int = typer.Option(8, "--bits", help="Affine width: 2, 3, 4, 5, 6 or 8."),
     group_size: int = typer.Option(
@@ -544,8 +566,13 @@ def quantize(
         "--mode",
         help="affine, mxfp4, mxfp8 or nvfp4 [dim](float modes fix bits and group size)[/].",
     ),
-    out: Path | None = typer.Option(
-        None, "--out", "-o", help="Destination [dim](default models/<name>-<tag>)[/]."
+    dest: Path | None = typer.Option(
+        None,
+        "--dest",
+        "-o",
+        metavar="DIR",
+        # Not --out: --out is where transcripts go, and this is where a checkpoint goes.
+        help="Where to write the checkpoint [dim](default: models/<name>-<tag>)[/].",
     ),
 ):
     """Build a quantised MLX checkpoint, then run it with [b]--backend mlx -M <dir>[/b].
@@ -563,23 +590,23 @@ def quantize(
         raise typer.BadParameter(f"{mode!r} unknown. Choose from {', '.join(qz.MODES)}.")
     try:
         with console.status("[dim]quantising…[/]") as st:
-            dest = qz.quantize(
-                model,
+            built = qz.quantize(
+                source,
                 bits=bits,
                 group_size=group_size,
                 mode=mode,
-                out=out,
+                out=dest,
                 on_status=lambda m: st.update(f"[dim]{m}…[/]"),
             )
     except (ValueError, OSError) as e:
         raise typer.BadParameter(str(e)) from e
     # The aligner is the same architecture with a classification head, so it quantises
     # through the same path -- but it is passed with a different flag.
-    flag = "--aligner" if "aligner" in model.lower() else "-M"
+    flag = "--aligner" if "aligner" in source.lower() else "-M"
     console.print(
-        f"[green]{dest}[/]  [dim]{describe_checkpoint(str(dest))} · "
-        f"{qz.size_gb(dest):.2f} GB[/]\n"
-        f"[dim]run it:[/] m tui --backend mlx {flag} {dest}"
+        f"[green]{built}[/]  [dim]{describe_checkpoint(str(built))} · "
+        f"{qz.size_gb(built):.2f} GB[/]\n"
+        f"[dim]run it:[/] m tui --backend mlx {flag} {built}"
     )
 
 
@@ -588,26 +615,34 @@ def diarize(
     audio_file: Path = typer.Argument(
         ..., metavar="FILE", help="Audio to diarize (wav, flac, m4a, mp3, mp4)."
     ),
-    out: Path | None = typer.Option(
-        None, "--out", "-o", help="Write RTTM here [dim](default: stdout only)[/]."
+    rttm_out: Path | None = typer.Option(
+        None,
+        "--rttm",
+        "-o",
+        metavar="FILE",
+        # Not --out: --out is a directory transcripts land in, and this is one RTTM file.
+        help="Write the turns here as RTTM [dim](default: stdout only)[/].",
     ),
-    num_speakers: int | None = typer.Option(
-        None, "--speakers", "-n", help="Exact speaker count, if known."
-    ),
+    num_speakers: int | None = NSPEAKERS,
     min_speakers: int = typer.Option(
         _DIA.min_speakers,
         "--min-speakers",
-        help="Fewest speakers to consider [dim](ignored with --speakers)[/].",
+        help="Fewest speakers to consider [dim](ignored when --speakers gives a count)[/].",
     ),
     max_speakers: int = typer.Option(
         _DIA.max_speakers,
         "--max-speakers",
-        help="Most speakers to consider [dim](ignored with --speakers)[/].",
+        help="Most speakers to consider [dim](ignored when --speakers gives a count)[/].",
     ),
-    threshold: float = typer.Option(
+    voice_distance: float = typer.Option(
         _DIA.threshold,
-        "--threshold",
-        help="Cosine distance at which two voices are one person.",
+        "--voice-distance",
+        # Not --threshold: everywhere else in this tool a threshold is the RMS gate that
+        # decides whether the microphone is hearing speech at all. Two voices closer than
+        # this are one person, which is not that, and the config file had to carry a
+        # special case to stop a bare `threshold =` from silently reaching both.
+        help="How close two voices must be to count as one person "
+        "[dim](cosine distance; higher merges more)[/].",
     ),
     hop: float = typer.Option(
         _DIA.hop_sec,
@@ -642,7 +677,7 @@ def diarize(
         )
     cfg = OfflineConfig(
         hop_sec=hop,
-        threshold=threshold,
+        threshold=voice_distance,
         num_speakers=num_speakers,
         min_speakers=min_speakers,
         max_speakers=max_speakers,
@@ -676,12 +711,12 @@ def diarize(
             highlight=False,
         )
 
-    if out:
+    if rttm_out:
         from .formats import rttm
 
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(rttm(turns, audio_file.stem))
-        console.print(f"\n[dim]→ {out}[/]")
+        rttm_out.parent.mkdir(parents=True, exist_ok=True)
+        rttm_out.write_text(rttm(turns, audio_file.stem))
+        console.print(f"\n[dim]→ {rttm_out}[/]")
 
     if words:
         import json
@@ -832,7 +867,7 @@ def tune(
         mic=mic,
         wav=None,
         threshold=None,
-        first=0.0,
+        interim=0.0,
         growth=1.6,
         max_gap=3.0,
         record=False,
@@ -1060,19 +1095,14 @@ def transcribe(
     aligner: str = ALIGNER,
     dtype: str = DTYPE,
     device: str = DEVICE,
-    speakers: bool = typer.Option(
+    diarize_too: bool = typer.Option(
         False,
-        "--speakers",
-        help="Also work out who spoke when, and label the transcript.",
+        "--diarize",
+        help="Also work out who spoke when, and label the transcript. "
+        "[dim]Implied by --speakers.[/]",
         rich_help_panel=SPK,
     ),
-    num_speakers: int | None = typer.Option(
-        None,
-        "--num-speakers",
-        "-n",
-        help="Exact speaker count, if you know it [dim](implies --speakers)[/].",
-        rich_help_panel=SPK,
-    ),
+    num_speakers: int | None = NSPEAKERS,
     out: Path = OUT,
     stem: str | None = typer.Option(
         None,
@@ -1098,7 +1128,8 @@ def transcribe(
     Partials are off: there is nobody watching text land, and provisional passes are the
     expensive half of a live session.
 
-    With [b]--speakers[/b] it also diarizes and labels the transcript, which is the whole
+    With [b]--diarize[/b] (or [b]--speakers N[/b], which implies it) it also works out who
+    spoke when and labels the transcript, which is the whole
     job for a recording of more than one person. Same decode, same pass over the file:
     running `m diarize` afterwards would re-read and re-analyse it.
     """
@@ -1109,7 +1140,7 @@ def transcribe(
         mic=None,
         wav=audio_file,
         threshold=threshold,
-        first=0.0,
+        interim=0.0,
         growth=1.6,
         max_gap=3.0,
         record=record,
@@ -1139,7 +1170,7 @@ def transcribe(
     # has almost none: 58 utterances for 28 minutes, each holding several people. The
     # decoded audio is handed to the session so the file is read once.
     turns, source = None, None
-    if speakers or num_speakers is not None:
+    if diarize_too or num_speakers is not None:
         from .audio import load as load_audio
         from .sources import make_source
 
@@ -1186,7 +1217,7 @@ def transcribe(
 
         def source(self, src):
             self.seconds = getattr(src, "seconds", 0.0)
-            # Kept so --speakers can diarize what was already decoded.
+            # Kept so --diarize can label what was already decoded.
             self.audio = getattr(src, "audio", None)
 
         def status(self, msg):
@@ -1283,7 +1314,7 @@ def _diarize_audio(audio, num_speakers: int | None):
     from .diarize.offline import OfflineConfig, OfflineDiarizer
 
     if audio is None:
-        raise typer.BadParameter("--speakers needs a file, not a live source.")
+        raise typer.BadParameter("--diarize needs a file, not a live source.")
     try:
         cfg = OfflineConfig(num_speakers=num_speakers)
         with console.status("[dim]loading diarization models…[/]") as st:
@@ -1312,7 +1343,7 @@ def _diarize_audio(audio, num_speakers: int | None):
 @app.command(rich_help_panel=LOOK)
 def cadence(
     length: float = typer.Argument(20.0, help="Utterance length to simulate, in seconds."),
-    first: float = FIRST,
+    interim: float = FIRST,
     growth: float = GROWTH,
     max_gap: float = MAXGAP,
 ):
@@ -1321,7 +1352,7 @@ def cadence(
     Cost is the audio re-encoded across all passes: every partial re-processes its whole
     prefix, so the schedule -- not the model -- decides whether that stays linear.
     """
-    c = Cadence(first=first, growth=growth, max_gap=max_gap)
+    c = Cadence(first=interim, growth=growth, max_gap=max_gap)
     points = c.schedule(length)
     total = sum(points) + length  # partials plus the final pass
     console.print(f"partials at: [cyan]{', '.join(f'{p:g}s' for p in points)}[/]")
@@ -1349,7 +1380,7 @@ def tui(
     aligner: str = ALIGNER,
     dtype: str = DTYPE,
     device: str = DEVICE,
-    first: float = FIRST,
+    interim: float = FIRST,
     growth: float = GROWTH,
     max_gap: float = MAXGAP,
     partials: str = PARTIALS,
@@ -1368,7 +1399,7 @@ def tui(
         mic=mic,
         wav=wav,
         threshold=threshold,
-        first=first,
+        interim=interim,
         growth=growth,
         max_gap=max_gap,
         record=record,
@@ -1407,7 +1438,7 @@ def live(
     aligner: str = ALIGNER,
     dtype: str = DTYPE,
     device: str = DEVICE,
-    first: float = FIRST,
+    interim: float = FIRST,
     growth: float = GROWTH,
     max_gap: float = MAXGAP,
     partials: str = PARTIALS,
@@ -1438,7 +1469,7 @@ def live(
         mic=mic,
         wav=wav,
         threshold=threshold,
-        first=first,
+        interim=interim,
         growth=growth,
         max_gap=max_gap,
         record=record,
@@ -1633,7 +1664,7 @@ def dictate(
         mic=mic,
         wav=wav,
         threshold=threshold,
-        first=interim,
+        interim=interim,
         growth=1.6,
         max_gap=3.0,
         record=record,
