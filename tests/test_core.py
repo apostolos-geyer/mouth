@@ -1239,6 +1239,66 @@ def test_a_config_key_reaches_every_command_that_has_the_flag():
     assert not split, f"one flag, two parameter names: {split}"
 
 
+def _quantize(*args):
+    """Invoke `m quantize` with the build itself stubbed out."""
+    from unittest.mock import patch
+
+    from typer.testing import CliRunner
+
+    import mouth.app as m
+
+    built = Path(m.paths.models_dir()) / "stub"
+    with (
+        patch.object(m.qz, "quantize", return_value=built),
+        patch.object(m, "available", return_value=True),
+        patch.object(m.qz, "size_gb", return_value=1.0),
+        patch.object(m, "describe_checkpoint", return_value="stub"),
+    ):
+        return CliRunner().invoke(m.app, ["quantize", *args])
+
+
+def test_a_float_mode_is_one_configuration_not_a_family():
+    """mxfp4/mxfp8/nvfp4 carry their block size in the format -- checked against mlx: the
+    only accepted triples are mxfp4 4/32, mxfp8 8/32 and nvfp4 4/16. Passing --bits beside
+    one used to be silently overridden, which is wrong twice: you don't get what you asked
+    for and you don't find out."""
+    for mode in ("mxfp4", "mxfp8", "nvfp4"):
+        assert _quantize("--mode", mode).exit_code == 0, f"{mode} alone must work"
+
+    bad = _quantize("--mode", "mxfp4", "--bits", "8")
+    assert bad.exit_code == 2
+    assert "--bits" in bad.output and "--group-size" not in bad.output, (
+        "must name only the flag that was actually typed -- typer vendors its own click, "
+        "so an identity check against click.core.ParameterSource reports every flag"
+    )
+
+    bad = _quantize("--mode", "nvfp4", "--group-size", "32")
+    assert (
+        bad.exit_code == 2 and "--group-size" in bad.output and "--bits" not in bad.output
+    )
+
+
+def test_affine_widths_and_groups_are_checked_before_the_model_loads():
+    """The help named the legal values; nothing enforced them, so a typo surfaced minutes
+    later as an mx.quantize raise from inside the loader."""
+    assert _quantize("--bits", "5", "--group-size", "32").exit_code == 0
+    assert _quantize("--bits", "7").exit_code == 2
+    assert _quantize("--group-size", "48").exit_code == 2
+
+
+def test_a_float_mode_names_itself_and_nothing_else():
+    """`mxfp4g32` restated the mode instead of distinguishing anything -- mxfp4 is always
+    group 32 -- and invited the question of what mxfp4g64 would be. There isn't one."""
+    from mouth.quantize import MODE_BITS, MODE_GROUP_SIZE, default_out
+
+    src = "Qwen/Qwen3-ASR-1.7B"
+    assert default_out(src, 8, 64, "affine").name == "qwen3-asr-1.7b-q8g64"
+    assert default_out(src, 5, 32, "affine").name == "qwen3-asr-1.7b-q5g32"
+    for mode in ("mxfp4", "mxfp8", "nvfp4"):
+        got = default_out(src, MODE_BITS[mode], MODE_GROUP_SIZE[mode], mode).name
+        assert got == f"qwen3-asr-1.7b-{mode}", got
+
+
 def test_a_new_command_inherits_settings_without_being_listed():
     """The property the inversion buys, stated so it cannot quietly go away."""
     from mouth import config as cfg

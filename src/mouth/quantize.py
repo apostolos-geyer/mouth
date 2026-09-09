@@ -32,20 +32,30 @@ SIDECARS = (
     "chat_template.jinja",
 )
 
-# Group size each mode actually supports. affine is free-ish; the float modes are fixed by
-# the format (mx.quantize raises rather than rounding), so we pick for the caller.
+# What each mode actually accepts, checked against mlx 0.32: affine is a real grid, the
+# float modes are each exactly one configuration because the block size is part of the
+# format (OCP microscaling fixes MXFP4/MXFP8 at 32, NVIDIA fixes NVFP4 at 16). mx.quantize
+# raises rather than rounding, so we pick for the caller instead of letting them find out.
 MODE_GROUP_SIZE = {"mxfp4": 32, "mxfp8": 32, "nvfp4": 16}
+MODE_BITS = {"mxfp4": 4, "mxfp8": 8, "nvfp4": 4}
 MODES = ("affine", "mxfp4", "mxfp8", "nvfp4")
+AFFINE_BITS = (2, 3, 4, 5, 6, 8)
+AFFINE_GROUP_SIZES = (32, 64, 128)
 
 
 def default_out(model: str, bits: int, group_size: int, mode: str) -> Path:
     """<cache>/models/<name>-q8g64 -- readable at a glance in `m models`.
 
+    A float mode names itself and nothing else. `mxfp4g32` was the old spelling and the
+    g32 was noise: mxfp4 is *always* group 32, so the suffix restated the mode rather than
+    distinguishing anything, and reading it invited the reasonable question of what
+    mxfp4g64 would be. There is no such thing.
+
     Cache, not data: these are GBs and this command rebuilds any of them from the
     upstream weights, so losing the directory costs time rather than work.
     """
     stem = Path(model).name.lower()
-    tag = f"q{bits}g{group_size}" if mode == "affine" else f"{mode}g{group_size}"
+    tag = f"q{bits}g{group_size}" if mode == "affine" else mode
     return paths.models_dir() / f"{stem}-{tag}"
 
 
@@ -74,8 +84,7 @@ def quantize(
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; choose from {', '.join(MODES)}")
     group_size = MODE_GROUP_SIZE.get(mode, group_size if group_size is not None else 64)
-    if mode != "affine":
-        bits = 8 if mode == "mxfp8" else 4  # the format fixes the width
+    bits = MODE_BITS.get(mode, bits)  # the format fixes the width
 
     say = on_status or (lambda m: None)
     out = Path(out) if out else default_out(model, bits, group_size, mode)

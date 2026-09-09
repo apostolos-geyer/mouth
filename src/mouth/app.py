@@ -549,6 +549,7 @@ def models(
 
 @app.command(rich_help_panel=SETUP)
 def quantize(
+    ctx: typer.Context,
     source: str = typer.Argument(
         DEFAULT_ASR,
         metavar="SOURCE",
@@ -557,14 +558,22 @@ def quantize(
         # the quantised checkpoint it was already using.
         help="Weights to convert: HF repo id or directory.",
     ),
-    bits: int = typer.Option(8, "--bits", help="Affine width: 2, 3, 4, 5, 6 or 8."),
+    bits: int = typer.Option(
+        8,
+        "--bits",
+        help="Affine width: 2, 3, 4, 5, 6 or 8. [dim]8 is the recommendation.[/]",
+    ),
     group_size: int = typer.Option(
-        64, "--group-size", help="Affine group size: 32, 64 or 128."
+        64,
+        "--group-size",
+        help="Affine group size: 32, 64 or 128. "
+        "[dim]Smaller stores more scales: better fidelity, larger file.[/]",
     ),
     mode: str = typer.Option(
         "affine",
         "--mode",
-        help="affine, mxfp4, mxfp8 or nvfp4 [dim](float modes fix bits and group size)[/].",
+        help="affine, mxfp4, mxfp8 or nvfp4. "
+        "[dim]Float modes fix both --bits and --group-size (mxfp4/mxfp8 g32, nvfp4 g16).[/]",
     ),
     dest: Path | None = typer.Option(
         None,
@@ -572,7 +581,10 @@ def quantize(
         "-o",
         metavar="DIR",
         # Not --out: --out is where transcripts go, and this is where a checkpoint goes.
-        help="Where to write the checkpoint [dim](default: models/<name>-<tag>)[/].",
+        # Spell the tag out rather than saying "<tag>": that name is what you then put in
+        # the config, so it is the one part of this the reader has to carry away.
+        help="Where to write the checkpoint. [dim]Default names it for what you chose "
+        "— <weights>-q<bits>g<group>, or <weights>-<mode> — so builds coexist.[/]",
     ),
 ):
     """Build a quantised MLX checkpoint, then name it in your config to keep it.
@@ -588,6 +600,43 @@ def quantize(
         )
     if mode not in qz.MODES:
         raise typer.BadParameter(f"{mode!r} unknown. Choose from {', '.join(qz.MODES)}.")
+    # The help has always named the legal widths and group sizes; nothing enforced them,
+    # so a typo surfaced minutes later as an mx.quantize raise from inside the loader.
+    if mode == "affine":
+        if bits not in qz.AFFINE_BITS:
+            raise typer.BadParameter(
+                f"--bits {bits} is not an affine width. "
+                f"Choose {', '.join(map(str, qz.AFFINE_BITS))}."
+            )
+        if group_size not in qz.AFFINE_GROUP_SIZES:
+            raise typer.BadParameter(
+                f"--group-size {group_size} is not supported. "
+                f"Choose {', '.join(map(str, qz.AFFINE_GROUP_SIZES))}."
+            )
+    else:
+        # A float mode is one configuration, not a family: the block size is part of the
+        # format. Silently overriding a --bits the user typed is the wrong answer twice --
+        # they don't get what they asked for, and they don't find out.
+        # By name, not `is not ParameterSource.DEFAULT`: typer vendors its own click, so
+        # `click.core.ParameterSource.DEFAULT` is a different enum member than the one
+        # this context returns and the identity check is always true -- which reported
+        # every flag as typed, including on a bare `m quantize --mode mxfp4`.
+        def typed_by_hand(name: str) -> bool:
+            src = ctx.get_parameter_source(name)
+            return src is not None and src.name != "DEFAULT"
+
+        typed = [
+            f"--{name.replace('_', '-')}"
+            for name in ("bits", "group_size")
+            if typed_by_hand(name)
+        ]
+        if typed:
+            raise typer.BadParameter(
+                f"{mode} fixes its own width and group size "
+                f"({qz.MODE_BITS[mode]}-bit, group {qz.MODE_GROUP_SIZE[mode]}), so "
+                f"{' and '.join(typed)} cannot apply. Drop {'them' if len(typed) > 1 else 'it'},"
+                f" or use --mode affine."
+            )
     try:
         with console.status("[dim]quantising…[/]") as st:
             built = qz.quantize(

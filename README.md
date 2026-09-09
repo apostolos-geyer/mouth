@@ -21,6 +21,28 @@ m quantize Qwen/Qwen3-ForcedAligner-0.6B      # -> qwen3-forcedaligner-0.6b-q8g6
 m models                                      # confirm both are there
 ```
 
+8-bit at group 64 is the default and the recommendation. There are two kinds of knob:
+
+**Affine** (`--mode affine`, the default) is a real grid — `--bits` takes 2, 3, 4, 5, 6
+or 8 and `--group-size` takes 32, 64 or 128. Fewer bits is smaller and faster; a smaller
+group stores more scales, so it costs size back and buys fidelity.
+
+**The three float modes are formats, not knobs.** Each is exactly one configuration,
+because the block size is part of the format itself — `mxfp4` is 4-bit group 32, `mxfp8`
+is 8-bit group 32, `nvfp4` is 4-bit group 16, and there is no `mxfp4g64` to ask for. MLX
+rejects any other combination, so passing `--bits` beside one is an error rather than a
+silent override.
+
+```sh
+m quantize --bits 4                    # -> qwen3-asr-1.7b-q4g64   ~1.7x faster, +0.43pp WER
+m quantize --bits 5 --group-size 32    # -> qwen3-asr-1.7b-q5g32
+m quantize --mode mxfp4                # -> qwen3-asr-1.7b-mxfp4
+```
+
+The directory name is the settings, so builds coexist and `m models` lists them with their
+tags. Whichever you build, that name is what goes in the config — see
+[the measured comparison](#measured-quantisation-is-the-whole-game) for how they differ.
+
 Keep them, so you never pass them again:
 
 ```sh
@@ -769,11 +791,27 @@ m tui -b mlx -M qwen3-asr-1.7b-q8g64 --aligner qwen3-forcedaligner-0.6b-q8g64
 4-bit costs +0.43pp WER upstream for another ~1.7x on long clips.
 
 ```sh
-m quantize                                  # 8-bit by default -> qwen3-asr-1.7b-q8g64
-m quantize --bits 4                         # speed-first
-m quantize --mode mxfp4                     # MLX float modes: mxfp4, mxfp8, nvfp4
-m models                                    # what's on disk
+m quantize                                  # 8-bit, group 64 -> qwen3-asr-1.7b-q8g64
+m quantize --bits 4                         # speed-first     -> qwen3-asr-1.7b-q4g64
+m quantize --bits 5 --group-size 32         #                 -> qwen3-asr-1.7b-q5g32
+m quantize --mode mxfp4                     #                 -> qwen3-asr-1.7b-mxfp4
+m models                                    # what's on disk, with each one's tag
 ```
+
+The whole menu, checked against mlx 0.32 rather than taken from the docs:
+
+| mode | bits | group size | combinations |
+|---|---|---|---|
+| `affine` | 2, 3, 4, 5, 6, 8 | 32, 64, 128 | 18 |
+| `mxfp4` | 4 | 32 | 1 |
+| `mxfp8` | 8 | 32 | 1 |
+| `nvfp4` | 4 | 16 | 1 |
+
+The float modes are OCP microscaling (`mxfp*`, 32-element blocks) and NVIDIA's FP4
+(`nvfp4`, 16), and the block size is part of the format — `mx.quantize` raises on anything
+else. So they take no options, and `m quantize --mode mxfp4 --bits 8` is refused rather
+than quietly ignoring the 8. Affine directories are tagged `q<bits>g<group>`; a float mode
+is just its own name, since `mxfp4g32` would only restate the mode.
 
 A checkpoint name resolves against the checkpoint directory, so `-M
 qwen3-asr-1.7b-q8g64` works from anywhere and is what belongs in the config —
