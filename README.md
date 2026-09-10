@@ -69,6 +69,27 @@ m tui
 
 First run downloads ~5GB of weights. `m config` prints what the file sets, per command.
 
+## In pi
+
+[pi](https://pi.dev) is a terminal coding agent. `/mouth` lets you talk into its editor
+instead of typing:
+
+```sh
+pi install git:github.com/apostolos-geyer/mouth   # the extension
+/mouth install                                    # ...and the CLI, if you skipped above
+```
+
+Two steps because they are two things — pi installs the extension, the extension installs
+`m`. `/mouth install` runs the `uv tool install` line from the quickstart, picking the
+extras this machine can resolve, and doubles as the update path.
+
+`/mouth` on its own toggles a listener that stays up: every pause commits a sentence into
+the editor, Enter sends and the listener survives it, `/mouth` again stops it. The footer
+carries a level meter and the sentence as it forms.
+
+`MOUTH_REPO` points the install at a fork or a local checkout; `MOUTH_BIN` at an `m` you
+already have. [What it is doing](#the-pi-extension-as-a-client-of-this).
+
 ## Commands
 
 ```sh
@@ -643,6 +664,26 @@ subscribes to one without disturbing the other.
 clip the front of every dictation — the 300ms pre-roll only covers a mic that is *already*
 open, which a process launched on a keypress isn't yet.
 
+### The pi extension, as a client of this
+
+`extensions/mouth.ts` is the reference consumer of the stream above — see
+[In pi](#in-pi) to install it. Everything it does is a consequence of that contract:
+
+- **`--hold` makes it a mode rather than a one-shot.** Without it the first 750ms pause
+  ends the process; with it, pauses only close utterances.
+- **`ready` gates the UI.** Levels only start once the mic is open, so a client that
+  ignores it sits on "starting…" through the model load and you talk into a device that
+  isn't listening yet.
+- **Enter is inferred, not subscribed to.** The extension remembers what it last wrote to
+  the editor; if the box no longer holds exactly that, you sent or edited, and your
+  contents become the new base. No coupling to pi's send event.
+- **Stopping still delivers.** SIGINT and SIGTERM both mean "I stopped talking", so the
+  utterance in flight when you toggle off is still transcribed — which is why the
+  extension drops finals arriving after the listener is gone rather than writing into the
+  editor seconds after saying OFF.
+
+Its whole npm surface is `import type`, so it installs nothing.
+
 ### What makes it start fast
 
 `--backend` and `--model` are the same flags as everywhere else, and torch on upstream
@@ -691,55 +732,6 @@ Two things get startup there in the first place, and the second is the bigger on
 
 So it starts on a keypress with any of them, and there is nothing to keep resident. That was
 the open question a daemon would have existed to answer, and at ~0.4s it does not need one.
-
-## The pi extension
-
-[pi](https://pi.dev) is a terminal coding agent. `extensions/mouth.ts` adds one command
-to it, `/mouth`, which lets you talk into the editor instead of typing:
-
-```sh
-pi install git:github.com/apostolos-geyer/mouth   # the extension
-/mouth install                                    # ...and the CLI it drives
-```
-
-Two steps because they are two things: pi installs the extension, and the extension
-installs the CLI. `/mouth install` shells out to
-
-```sh
-uv tool install --force "mouth[mlx,diarize] @ git+https://github.com/apostolos-geyer/mouth"
-```
-
-picking the extras this machine can actually resolve — `mlx` ships arm64-macOS wheels
-only and diarization is CoreML, so a Linux box asks for neither and still transcribes.
-`--force` makes it the update path too. Afterwards it runs `m --version` to check the
-binary is on pi's PATH, because an install that reports success and then can't be found
-is the worst of both; if uv's bin dir is new, `uv tool update-shell` and restart pi.
-
-`MOUTH_REPO` points the install at a fork or a local checkout, `MOUTH_BIN` at a binary
-that is already somewhere else.
-
-`/mouth` with no argument toggles a listener that stays up. Every pause commits a sentence into the
-editor, Enter sends and the listener survives it, `/mouth` again stops it. The footer
-carries a level meter and the sentence as it forms.
-
-It is a thin client over `m dictate --hold --events`, and the interesting parts are all
-consequences of that contract:
-
-- **`--hold` makes it a mode rather than a one-shot.** Without it the first 750ms pause
-  ends the process; with it, pauses only close utterances.
-- **`--events` is the whole interface.** Levels (~33/s) drive the meter, `partial` shows
-  the sentence forming, `final` lands it in the editor. `ready` is the one that gates the
-  UI: levels only start once the mic is open, so a client that ignores it sits on
-  "starting…" through the model load and you talk into a device that isn't listening yet.
-- **Enter is inferred, not subscribed to.** The extension remembers what it last wrote to
-  the editor; if the box no longer holds exactly that, you sent or edited, and your
-  contents become the new base. No coupling to pi's send event.
-- **Stopping still delivers.** `m` traps SIGTERM as "I stopped talking" rather than
-  "abort", so the utterance in flight when you toggle off is still transcribed — which is
-  why the extension drops finals that arrive after the listener is gone rather than
-  writing into the editor seconds after saying OFF.
-
-Zero runtime dependencies: node builtins, and pi's own types as a peer.
 
 ## Where things go
 
