@@ -6,10 +6,15 @@ Apple Silicon; see [Platforms](#platforms) for what works elsewhere.
 
 ## Quickstart
 
+No clone needed:
+
 ```sh
-uv tool install -e ".[mlx,diarize]"
+uv tool install "mouth[mlx,diarize] @ git+https://github.com/apostolos-geyer/mouth"
 uv tool update-shell                          # once, if uv's bin dir isn't on PATH
 ```
+
+Drop the extras you can't use — `mlx` is arm64-macOS only and `diarize` is CoreML, so
+`uv tool install "mouth @ git+..."` is the portable form. See [Platforms](#platforms).
 
 Quantise both checkpoints. This is the single biggest thing you can do — 2.2x faster
 inference and 0.4s to ready instead of 6-10s — and it is a deliberate step, so nothing
@@ -111,13 +116,28 @@ anything short of a Mac transcribes but cannot tell you who spoke.
 
 The two extras are the heavy optional paths: `mlx` is the MLX backend and what
 `m quantize` needs, `diarize` is `m diarize`. Neither is a default dependency — the first
-pulls the whole mlx stack, the second coremltools. `uv tool install .` gets torch alone.
-
-To run out of the repo without installing anything:
+pulls the whole mlx stack, the second coremltools.
 
 ```sh
-uv sync
-uv run m tui           # the package is `mouth`; the command is `m`
+uv tool install "mouth[mlx,diarize] @ git+https://github.com/apostolos-geyer/mouth"
+uv tool install --force "mouth[...] @ git+..."     # ...and the same line updates it
+```
+
+`--force` because uv resolves the git ref to a commit and otherwise leaves an existing
+install alone without saying so.
+
+**Python 3.12 or 3.13.** The package itself is fine on 3.14; coremltools is not, and
+ships no cp314 wheel — uv would build it from the sdist and hand you an install that
+imports and then can't load a compiled model. `requires-python` bounds it so a
+from-scratch install lands somewhere that works.
+
+### Working on it
+
+```sh
+git clone https://github.com/apostolos-geyer/mouth && cd mouth
+uv sync --extra mlx --extra diarize
+uv run m tui                        # the package is `mouth`; the command is `m`
+uv tool install -e ".[mlx,diarize]" # or a system-wide `m`, live against the clone
 ```
 
 `-e` links the install to `src/` instead of copying it, so edits are live and there is no
