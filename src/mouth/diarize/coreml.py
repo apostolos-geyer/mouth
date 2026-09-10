@@ -13,6 +13,7 @@ is ungated unlike the pyannote originals.
 from __future__ import annotations
 
 import functools
+import sys
 from pathlib import Path
 
 DIARIZATION_REPO = "FluidInference/speaker-diarization-coreml"
@@ -29,6 +30,16 @@ def _require():
     try:
         import coremltools as ct
     except ImportError as e:
+        # Telling someone who *did* install the extra to install the extra is a dead end,
+        # and on 3.14 that is exactly who is here: coremltools ships no cp314 wheel, so
+        # the dependency marker excludes it and this is the only place that can explain.
+        if sys.version_info >= (3, 14):
+            raise DiarizationUnavailable(
+                f"diarization needs coremltools, which has no wheel for Python "
+                f"{sys.version_info.major}.{sys.version_info.minor}. Reinstall on 3.12 or "
+                f"3.13 -- `uv tool install --python 3.13 --force "
+                f"'mouth[mlx,diarize] @ git+https://github.com/apostolos-geyer/mouth'`."
+            ) from e
         raise DiarizationUnavailable(
             "diarization needs coremltools; install it with `uv sync --extra diarize`"
         ) from e

@@ -28,7 +28,11 @@ dependencies = [
 mlx = ["mlx-qwen3-asr>=0.3.5"]
 # Diarization. coremltools runs the converted pyannote/Sortformer models on the ANE/GPU;
 # scipy is the clustering, and is otherwise only present transitively via librosa.
-diarize = ["coremltools>=9.0", "scipy>=1.11"]
+# The marker is belt-and-braces with requires-python: `uv tool install --python 3.14`
+# installs regardless of the bound, and coremltools has no cp314 wheel -- so without
+# this it builds from the sdist and yields a package that imports and then cannot load
+# a compiled model. Excluded, `m diarize` says why instead of raising from inside it.
+diarize = ["coremltools>=9.0; python_version < '3.14'", "scipy>=1.11"]
 
 [project.scripts]
 m = "mouth.app:main"
