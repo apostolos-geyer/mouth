@@ -7,11 +7,20 @@
     "type": "git",
     "url": "git+https://github.com/apostolos-geyer/mouth.git"
   },
-  "keywords": ["pi", "pi-extension", "speech-to-text", "dictation", "asr", "local"],
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "speech-to-text",
+    "dictation",
+    "asr",
+    "local"
+  ],
   "pi": {
-    "extensions": ["./extensions/mouth.ts"]
+    "extensions": [
+      "./extensions/mouth.ts"
+    ]
   },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1"
   }
 }
