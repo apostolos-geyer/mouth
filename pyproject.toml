@@ -2,7 +2,13 @@
 name = "mouth"
 version = "0.3.0"
 description = "Live local transcription with Qwen3-ASR + forced alignment"
-requires-python = ">=3.12"
+# Upper bound is coremltools, not this package: it ships cp37-cp313 wheels and no cp314,
+# so on 3.14 uv builds it from the sdist and produces an install that imports but cannot
+# load a compiled model ("installed from an egg rather than a wheel") -- which surfaces as
+# a traceback out of `m diarize` on a machine where everything else works. Without the
+# bound uv picks the newest interpreter it can, so a from-scratch install lands there by
+# default. Lift it when coremltools ships cp314.
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "qwen-asr>=0.0.6",
     "torch>=2.13.0",
