@@ -1,0 +1,17 @@
+{
+  "name": "mouth",
+  "version": "0.3.0",
+  "description": "Speak into pi's editor. The /mouth command, backed by the mouth CLI's local Qwen3-ASR.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/apostolos-geyer/mouth.git"
+  },
+  "keywords": ["pi", "pi-extension", "speech-to-text", "dictation", "asr", "local"],
+  "pi": {
+    "extensions": ["./extensions/mouth.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

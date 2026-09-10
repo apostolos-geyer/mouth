@@ -374,6 +374,8 @@ src/mouth/
   app.py         typer entrypoint
 tests/           CPU-only: VAD, cadence, recorder, formats, diarization logic
 tools/           call-graph and trace helpers, not part of the package
+extensions/
+  mouth.ts       the pi extension -- /mouth, over `m dictate --events`
 ```
 
 ## How it works
@@ -669,6 +671,41 @@ Two things get startup there in the first place, and the second is the bigger on
 
 So it starts on a keypress with any of them, and there is nothing to keep resident. That was
 the open question a daemon would have existed to answer, and at ~0.4s it does not need one.
+
+## The pi extension
+
+[pi](https://pi.dev) is a terminal coding agent. `extensions/mouth.ts` adds one command
+to it, `/mouth`, which lets you talk into the editor instead of typing:
+
+```sh
+pi install git:github.com/apostolos-geyer/mouth
+```
+
+That installs the extension only — `m` itself still has to be on PATH (or point
+`MOUTH_BIN` at it), because transcription runs in this repo's CLI and not in the agent.
+
+`/mouth` toggles a listener that stays up. Every pause commits a sentence into the
+editor, Enter sends and the listener survives it, `/mouth` again stops it. The footer
+carries a level meter and the sentence as it forms.
+
+It is a thin client over `m dictate --hold --events`, and the interesting parts are all
+consequences of that contract:
+
+- **`--hold` makes it a mode rather than a one-shot.** Without it the first 750ms pause
+  ends the process; with it, pauses only close utterances.
+- **`--events` is the whole interface.** Levels (~33/s) drive the meter, `partial` shows
+  the sentence forming, `final` lands it in the editor. `ready` is the one that gates the
+  UI: levels only start once the mic is open, so a client that ignores it sits on
+  "starting…" through the model load and you talk into a device that isn't listening yet.
+- **Enter is inferred, not subscribed to.** The extension remembers what it last wrote to
+  the editor; if the box no longer holds exactly that, you sent or edited, and your
+  contents become the new base. No coupling to pi's send event.
+- **Stopping still delivers.** `m` traps SIGTERM as "I stopped talking" rather than
+  "abort", so the utterance in flight when you toggle off is still transcribed — which is
+  why the extension drops finals that arrive after the listener is gone rather than
+  writing into the editor seconds after saying OFF.
+
+Zero runtime dependencies: node builtins, and pi's own types as a peer.
 
 ## Where things go
 
