@@ -678,13 +678,27 @@ the open question a daemon would have existed to answer, and at ~0.4s it does no
 to it, `/mouth`, which lets you talk into the editor instead of typing:
 
 ```sh
-pi install git:github.com/apostolos-geyer/mouth
+pi install git:github.com/apostolos-geyer/mouth   # the extension
+/mouth install                                    # ...and the CLI it drives
 ```
 
-That installs the extension only — `m` itself still has to be on PATH (or point
-`MOUTH_BIN` at it), because transcription runs in this repo's CLI and not in the agent.
+Two steps because they are two things: pi installs the extension, and the extension
+installs the CLI. `/mouth install` shells out to
 
-`/mouth` toggles a listener that stays up. Every pause commits a sentence into the
+```sh
+uv tool install --force "mouth[mlx,diarize] @ git+https://github.com/apostolos-geyer/mouth"
+```
+
+picking the extras this machine can actually resolve — `mlx` ships arm64-macOS wheels
+only and diarization is CoreML, so a Linux box asks for neither and still transcribes.
+`--force` makes it the update path too. Afterwards it runs `m --version` to check the
+binary is on pi's PATH, because an install that reports success and then can't be found
+is the worst of both; if uv's bin dir is new, `uv tool update-shell` and restart pi.
+
+`MOUTH_REPO` points the install at a fork or a local checkout, `MOUTH_BIN` at a binary
+that is already somewhere else.
+
+`/mouth` with no argument toggles a listener that stays up. Every pause commits a sentence into the
 editor, Enter sends and the listener survives it, `/mouth` again stops it. The footer
 carries a level meter and the sentence as it forms.
 

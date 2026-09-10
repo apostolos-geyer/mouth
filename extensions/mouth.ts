@@ -11,9 +11,10 @@
  * stderr while keeping stdout clean. Levels drive a meter in the footer, partials show
  * the sentence forming, finals land in the editor.
  *
- * Requires the `m` CLI on PATH (https://github.com/apostolos-geyer/mouth), or set
- * MOUTH_BIN to an absolute path. Nothing here is bundled: transcription is local, and
- * this file only marshals between one process and one text box.
+ * `/mouth install` installs the CLI this drives, straight from the repo, so nothing here
+ * depends on where anyone keeps a checkout. Set MOUTH_BIN to use a different binary.
+ * Nothing is bundled: transcription is local, and this file only marshals between one
+ * process and one text box.
  */
 
 import type {
@@ -23,6 +24,20 @@ import type {
 import { spawn, type ChildProcess } from "node:child_process";
 
 const M_BIN = process.env.MOUTH_BIN ?? "m";
+
+/** Where `/mouth install` installs from. MOUTH_REPO points it at a fork or a local path. */
+const REPO = process.env.MOUTH_REPO ?? "git+https://github.com/apostolos-geyer/mouth";
+
+/**
+ * The optional dependency groups worth having here, from the platform table in the repo's
+ * README: MLX ships arm64-macOS wheels only, and diarization is CoreML, so it is macOS at
+ * all and slow off Apple Silicon. Asking for an extra that cannot resolve fails the whole
+ * install, so the ones that cannot work are simply not requested.
+ */
+function extrasForThisMachine(): string {
+	if (process.platform !== "darwin") return "";
+	return process.arch === "arm64" ? "[mlx,diarize]" : "[diarize]";
+}
 
 /** Seconds of audio before the first provisional text. 0 would turn partials off. */
 const INTERIM_SEC = "0.4";
@@ -130,6 +145,76 @@ function onJsonLines(
 	});
 }
 
+// ---- `/mouth install` -----------------------------------------------------------
+
+/** Run a command, painting its last line of output into the footer as it goes. */
+function run(
+	bin: string,
+	args: string[],
+	painter: StatusPainter,
+	label: string,
+): Promise<{ code: number | null; tail: string }> {
+	return new Promise((done) => {
+		const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+		let tail = "";
+		const absorb = (chunk: string) => {
+			tail = `${tail}${chunk}`.slice(-4000);
+			// uv reports progress on the last line; show that rather than a spinner that
+			// says nothing during a multi-GB torch download.
+			const line = chunk.trim().split("\n").pop()?.trim();
+			if (line) painter.set(`◌ ${label} ${line.slice(0, 60)}`);
+		};
+		child.stdout!.setEncoding("utf8");
+		child.stderr!.setEncoding("utf8");
+		child.stdout!.on("data", absorb);
+		child.stderr!.on("data", absorb);
+		child.on("error", () => done({ code: null, tail }));
+		child.on("close", (code) => done({ code, tail: tail.trim() }));
+	});
+}
+
+async function install(ctx: ExtensionCommandContext): Promise<void> {
+	const painter = new StatusPainter(ctx);
+	const spec = `mouth${extrasForThisMachine()} @ ${REPO}`;
+	painter.set("◌ installing mouth…");
+	notify(ctx, `Installing ${spec}\nFirst run also downloads ~5GB of weights.`, "info");
+
+	// --force so this doubles as the update path: uv resolves the git ref to a commit, and
+	// without it an existing install is left alone and you are told nothing changed.
+	const { code, tail } = await run(
+		"uv",
+		["tool", "install", "--force", spec],
+		painter,
+		"installing",
+	);
+	painter.clear();
+
+	if (code === null) {
+		notify(
+			ctx,
+			"Could not run `uv`. Install it first: https://docs.astral.sh/uv/getting-started/installation/",
+			"error",
+		);
+		return;
+	}
+	if (code !== 0) {
+		notify(ctx, `Install failed (${code}):\n${tail.slice(-600)}`, "error");
+		return;
+	}
+
+	// uv puts the binary in its tool bin dir, which is not necessarily on this process's
+	// PATH -- and a "success" that /mouth then cannot use is the worst of both.
+	const probe = await run(M_BIN, ["--version"], painter, "checking");
+	painter.clear();
+	notify(
+		ctx,
+		probe.code === 0
+			? `Installed ${probe.tail.trim()}. /mouth to start talking.`
+			: `Installed, but \`${M_BIN}\` is not on pi's PATH yet.\nRun \`uv tool update-shell\` and restart pi, or set MOUTH_BIN.`,
+		probe.code === 0 ? "info" : "warning",
+	);
+}
+
 // ---- the command ---------------------------------------------------------------
 
 export default function mouthExtension(pi: ExtensionAPI) {
@@ -233,7 +318,7 @@ export default function mouthExtension(pi: ExtensionAPI) {
 			stop();
 			notify(
 				ctx,
-				`Could not launch ${M_BIN}: ${err.message}\nInstall the mouth CLI, or set MOUTH_BIN.`,
+				`Could not launch ${M_BIN}: ${err.message}\nRun /mouth install, or set MOUTH_BIN.`,
 				"error",
 			);
 		});
@@ -268,7 +353,20 @@ export default function mouthExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("mouth", {
 		description: "Toggle dictation — pauses commit sentences to the editor, ↩ sends",
-		handler: async (_args, ctx) => {
+		getArgumentCompletions: (prefix) =>
+			"install".startsWith(prefix.trim())
+				? [{ value: "install", label: "install", description: "Install the mouth CLI from its repo" }]
+				: null,
+		handler: async (args, ctx) => {
+			const sub = args.trim();
+			if (sub === "install") {
+				await install(ctx);
+				return;
+			}
+			if (sub) {
+				notify(ctx, `Unknown: /mouth ${sub}. Use /mouth or /mouth install.`, "warning");
+				return;
+			}
 			if (listener) {
 				stop();
 				notify(ctx, "Mouth mode OFF.", "info");
