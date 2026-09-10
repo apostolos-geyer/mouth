@@ -417,6 +417,7 @@ tests/           CPU-only: VAD, cadence, recorder, formats, diarization logic
 tools/           call-graph and trace helpers, not part of the package
 extensions/
   mouth.ts       the pi extension -- /mouth, over `m dictate --events`
+  mouth.test.mjs its tests (needs bun; not part of pytest)
 ```
 
 ## How it works
@@ -683,6 +684,14 @@ open, which a process launched on a keypress isn't yet.
   editor seconds after saying OFF.
 
 Its whole npm surface is `import type`, so it installs nothing.
+
+```sh
+bun extensions/mouth.test.mjs
+```
+
+drives it for real — a stand-in for `m dictate` replays a scripted event stream and a fake
+pi records what lands where, which is how the `close`-after-restart bug above was found.
+It needs bun and is not part of `pytest`, since it is the only JavaScript here.
 
 ### What makes it start fast
 

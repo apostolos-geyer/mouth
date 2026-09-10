@@ -45,16 +45,11 @@ const INTERIM_SEC = "0.4";
 // ---- rendering ---------------------------------------------------------------
 
 const METER_WIDTH = 12;
-const PARTIAL_WIDTH = 40;
 
 /** Map RMS (~1e-4 quiet .. ~0.3 loud) to 0..1 on a log scale, which is how it sounds. */
 function rmsFraction(rms: number): number {
 	const v = Math.max(rms, 1e-4);
 	return Math.min(1, Math.max(0, (Math.log10(v) + 4) / 3));
-}
-
-function quote(text: string, width = PARTIAL_WIDTH): string {
-	return `"${text.length > width ? `${text.slice(0, width - 1)}…` : text}"`;
 }
 
 function renderMeter(rms: number, speech: boolean): string {
@@ -226,29 +221,48 @@ export default function mouthExtension(pi: ExtensionAPI) {
 	let partial = ""; // current interim
 	let lastWritten = ""; // what WE last put in the editor -- anything else means the user sent or edited
 
+	/**
+	 * The footer is the meter and the state, and no words. Words go in one place -- the
+	 * editor -- because the committed transcript rendered in both was the same sentence
+	 * twice on one screen, once where it was going and once underneath it.
+	 */
 	function paint(rms: number | null, speech: boolean): void {
 		if (!listener || !painter) return;
-		const committed = base ? `${quote(base.slice(-60), 60)} ` : "";
-		const interim = partial ? quote(partial) : "listening… (↩ sends · /mouth stops)";
 		const meter = rms == null ? "◌" : renderMeter(rms, speech);
-		painter.set(`${meter} ${committed}${interim}`, rms != null);
+		const state = ready ? "listening… (↩ sends · /mouth stops)" : "starting…";
+		painter.set(`${meter} ${state}`, rms != null);
 	}
 
-	function appendFinal(ctx: ExtensionCommandContext, text: string): void {
+	/**
+	 * Put `base` plus whatever is provisional into the editor.
+	 *
+	 * Send/edit detection lives here: if the box no longer holds exactly what we wrote,
+	 * the user pressed Enter (pi cleared it) or typed something, so their contents are the
+	 * new ground truth and the buffer restarts from there. Doing it on every write rather
+	 * than only on finals is what lets a partial be shown without eating something typed
+	 * a moment ago.
+	 */
+	function writeEditor(ctx: ExtensionCommandContext): void {
 		// `m` traps SIGTERM as "I stopped talking" rather than "abort", so the utterance
 		// in flight when you hit /mouth still gets transcribed and still emits a final on
 		// a stderr we are still draining. Without this it lands in the editor seconds
 		// after the footer said OFF.
 		if (!listener || !ctx.hasUI) return;
-		// Send/edit detection: if the editor no longer holds exactly what we wrote, the
-		// user pressed Enter (pi cleared it) or typed something -- so their contents are
-		// the new ground truth and our buffer restarts from there.
-		const cur = ctx.ui.getEditorText().trimEnd();
-		if (!lastWritten || cur !== lastWritten) base = cur;
-		base = base ? `${base.trimEnd()} ${text}` : text;
+		const cur = ctx.ui.getEditorText();
+		if (!lastWritten || cur !== lastWritten) base = cur.trimEnd();
+		const shown = [base, partial].filter(Boolean).join(" ");
+		ctx.ui.setEditorText(shown);
+		lastWritten = shown;
+	}
+
+	function appendFinal(ctx: ExtensionCommandContext, text: string): void {
+		if (!listener || !ctx.hasUI) return;
+		// Commit before writing: the final replaces the partial it was refining, rather
+		// than landing after it and saying the sentence twice.
+		partial = text;
+		writeEditor(ctx);
+		base = lastWritten;
 		partial = "";
-		ctx.ui.setEditorText(base);
-		lastWritten = base;
 	}
 
 	function stop(): void {
@@ -296,7 +310,7 @@ export default function mouthExtension(pi: ExtensionAPI) {
 						break;
 					case "partial":
 						partial = String(ev.text ?? "");
-						paint(null, true);
+						writeEditor(ctx);
 						break;
 					case "final":
 						appendFinal(ctx, String(ev.text ?? ""));
@@ -324,6 +338,11 @@ export default function mouthExtension(pi: ExtensionAPI) {
 		});
 
 		child.on("close", (code) => {
+			// Only tear down if this is still the listener. `close` lands well after the
+			// kill that caused it, so a stop-then-start inside that window had the dying
+			// child's handler shut down its replacement -- and the next thing you said
+			// went nowhere, with the footer already reading "listening".
+			if (listener !== null && listener !== child) return;
 			// /mouth already cleared the listener when it tore this down, and a deliberate
 			// stop does not need reporting.
 			const deliberate = listener === null;
